@@ -255,16 +255,24 @@ def _resolve_desktop_name(accessible_name: str) -> tuple[Path | None, bool]:
     return None, len(matches) > 1
 
 
-def _explorer_folder_path(hwnd: int) -> Path | None:
+def _explorer_folder_paths(hwnd: int) -> list[Path]:
+    """Return all filesystem folders exposed for one Explorer HWND.
+
+    Windows 11 tabs may share a top-level HWND. Enumerating every matching Shell
+    window and resolving the clicked display name across them is safer than
+    trusting whichever tab Shell.Application happens to return first.
+    """
     if os.name != "nt" or hwnd <= 0:
-        return None
+        return []
 
     try:
         import pythoncom
         import win32com.client
     except Exception:
-        return None
+        return []
 
+    folders: list[Path] = []
+    seen: set[str] = set()
     pythoncom.CoInitialize()
     try:
         shell = win32com.client.Dispatch("Shell.Application")
@@ -274,16 +282,42 @@ def _explorer_folder_path(hwnd: int) -> Path | None:
                     continue
                 raw = str(window.Document.Folder.Self.Path or "").strip()
                 if not raw or raw.startswith("::{"):
-                    return None
+                    continue
                 folder = Path(raw)
-                return folder if folder.is_dir() else None
+                if not folder.is_dir():
+                    continue
+                key = os.path.normcase(os.path.abspath(str(folder)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                folders.append(folder)
             except Exception:
                 continue
     except Exception:
-        return None
+        return []
     finally:
         pythoncom.CoUninitialize()
-    return None
+    return folders
+
+
+def _resolve_explorer_name(hwnd: int, accessible_name: str) -> tuple[Path | None, bool, bool]:
+    folders = _explorer_folder_paths(hwnd)
+    if not folders:
+        return None, False, False
+
+    matches: list[Path] = []
+    seen: set[str] = set()
+    for folder in folders:
+        for entry in _matching_entries(folder, accessible_name):
+            key = os.path.normcase(os.path.abspath(str(entry)))
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(entry)
+
+    if len(matches) == 1:
+        return matches[0], False, True
+    return None, len(matches) > 1, True
 
 
 def resolve_shell_item_at(point: tuple[int, int]) -> AimSelectionResult:
@@ -321,23 +355,21 @@ def resolve_shell_item_at(point: tuple[int, int]) -> AimSelectionResult:
             )
         return AimSelectionResult(AimStatus.FOUND, path=path, target=hit.target)
 
-    folder = _explorer_folder_path(hit.root_handle)
-    if folder is None:
+    path, ambiguous, shell_supported = _resolve_explorer_name(hit.root_handle, hit.name)
+    if not shell_supported:
         return AimSelectionResult(
             AimStatus.UNSUPPORTED,
             target=hit.target,
             message="这个位置不是普通文件夹，我暂时踹不了。",
         )
-
-    matches = _matching_entries(folder, hit.name)
-    if len(matches) == 1:
-        return AimSelectionResult(AimStatus.FOUND, path=matches[0], target=hit.target)
-    if len(matches) > 1:
+    if ambiguous:
         return AimSelectionResult(
             AimStatus.AMBIGUOUS,
             target=hit.target,
-            message="这个文件夹里有同名目标，我没敢乱踹。",
+            message="这个 Explorer 窗口里有同名目标，我没敢乱踹。",
         )
+    if path is not None:
+        return AimSelectionResult(AimStatus.FOUND, path=path, target=hit.target)
     return AimSelectionResult(
         AimStatus.EMPTY,
         target=hit.target,
