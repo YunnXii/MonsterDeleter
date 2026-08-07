@@ -12,7 +12,7 @@ from app.character import CharacterConfig
 from app.context_menu import ensure_context_menu, register_context_menu, unregister_context_menu
 from app.kick_calibrator import KickCalibrationOverlay
 from app.launcher import LaunchAction, show_launch_prompt
-from app.overlay import DesktopCleanerOverlay
+from app.responsive_overlay import ResponsiveDesktopCleanerOverlay
 from app.resources import resource_path
 
 
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     target = Path(args.target).expanduser().resolve() if args.target else None
     demo = args.demo or target is None
-    overlay = DesktopCleanerOverlay(target, config, demo=demo)
+    overlay = ResponsiveDesktopCleanerOverlay(target, config, demo=demo)
     overlay.show()
     overlay.activateWindow()
     overlay.setFocus()
