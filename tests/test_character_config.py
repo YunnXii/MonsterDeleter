@@ -10,3 +10,5 @@ def test_character_config_loads() -> None:
     assert config.width > 0
     assert config.height > 0
     assert config.menu_text
+    assert config.confirm_text == "嘤嘤嘤，就是这个！"
+    assert config.retry_text == "不是不是"
