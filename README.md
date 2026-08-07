@@ -2,7 +2,7 @@
 
 这是从 `MonsterDeleter` 改造而来的 Windows 文件清理工具。现在它已经是一个常驻桌面的 Q 版家琦：平时待在桌面角落，收到任务后走到目标旁边确认，再一脚把倒霉文件踹进回收站。
 
-核心删除动画已经封版，当前开发重点是常驻桌面宠物、真实文件定位、真准星、托盘、多显示器和单 EXE 日用体验。
+核心删除动画已经封版；常驻桌面宠物、文件右键无准星直达、真准星、托盘、多显示器基础适配和单 EXE 构建链均已接通。
 
 ## 当前使用方式
 
@@ -30,7 +30,7 @@ python main.py
 
 同一屏幕时，正常尺寸角色从常驻小人的脚底位置直接出发，并在任务结束后真正走回原位。Pet 拖到哪里，哪里就是当前 Home。
 
-如果 Pet 与目标位于不同显示器，出发阶段仍从目标屏幕距离 Pet 更近的一侧进入；回程时先走出当前屏幕，再把舞台切到 Home 所在屏幕，从靠近来源屏的一侧出现并继续走回停靠点，避免用侧身走路精灵硬跨两块显示器。
+如果 Pet 与目标位于不同显示器，出发阶段从目标屏幕距离 Pet 更近的一侧进入；回程时先走出当前屏幕，再把舞台切到 Home 所在屏幕，从靠近来源屏的一侧出现并继续走回停靠点。
 
 定位时不会只凭文件名随便猜：
 
@@ -46,22 +46,38 @@ python main.py
 把文件所在的桌面或文件夹窗口露出来，再叫我一次。
 ```
 
-如果同名项目过多且无法确认，会提示用户把目标窗口放到前面再试。不会退回旧的“随便点个坐标”模式。
+不会退回旧的“随便点个坐标”模式。
 
-### 模式二：右键常驻小人 → 瞄一个倒霉文件 —— 下一阶段
+### 模式二：右键常驻小人 → 瞄一个倒霉文件 —— 已完成
 
-这一项目前仍刻意保持占位，不调用旧假准星。
+1. 右键常驻小人，选择“瞄一个倒霉文件”；
+2. 出现鼠标穿透的真准星；
+3. 准星移动到 Desktop / Explorer 文件项上时，后台 UI Automation 实时命中下面的 `ListItem`，标签显示识别到的名称；
+4. 左键点击由临时 Windows 低级鼠标 Hook 截获，不会真的打开文件；
+5. 程序根据命中的桌面 / Explorer 窗口解析真实文件夹，再把 Explorer 的显示名反解成完整 Path；
+6. 得到 `真实 Path + 真实屏幕矩形` 后关闭准星，直接复用模式一的执行流程；
+7. 右键或 Esc 可取消瞄准。
 
-下一阶段会实现：
+内部链路：
 
 ```text
-屏幕坐标
-→ UI Automation / Shell 命中测试
-→ 真实文件 Path + 文件矩形
-→ 家琦直接走过去确认
+屏幕物理坐标
+→ UI Automation ControlFromPoint
+→ Desktop / Explorer ListItem
+→ Shell.Application 取得 Explorer 当前真实目录
+→ 处理隐藏扩展名
+→ 真实 Path + UIA BoundingRectangle
+→ Qt 逻辑坐标
+→ 常驻任务执行器
 ```
 
-完成以后，两种入口最终都会统一成同一种内部任务：`真实 Path + 真实屏幕位置`。
+真准星不会只凭显示名冒险：如果隐藏扩展名导致例如 `资料` 文件夹与 `资料.docx` 在屏幕上都显示为“资料”，会直接判定歧义并拒绝乱踹。
+
+点击空白处、非文件元素或无法解析成普通文件系统 Path 的虚拟位置时，准星会给出提示并继续留在瞄准状态，不会退出或随便选一个目标。
+
+准星视觉层使用 `WindowTransparentForInput`，输入由瞄准期间临时存在的 `WH_MOUSE_LL / WH_KEYBOARD_LL` Hook 负责，因此透明层不会挡住底下 Explorer 的 UI Automation Hit Test。
+
+两种入口现在最终都统一成同一种内部任务：`真实 Path + 真实屏幕位置`。
 
 ## 常驻小人
 
@@ -106,7 +122,7 @@ Pet 点击互动通过 `InteractionProvider` 抽象。当前使用 `RandomQuipPr
 → 退出
 ```
 
-任务执行、尺寸 morph 或目标解析期间暂不排队，新的请求会提示：
+任务执行、尺寸 morph、目标解析或真准星瞄准期间暂不排队，新的请求会提示：
 
 ```text
 手上正踹着一个呢，等等。
@@ -168,6 +184,8 @@ UI Automation 的 `BoundingRectangle` 使用 Windows 物理像素，而 Qt 在�
 - 副屏位于主屏左侧或右侧；
 - 100% / 150% / 200% Windows 缩放。
 
+真准星的低级鼠标 Hook 直接取得 Windows 物理屏幕坐标，因此点击命中不经过 Qt 坐标反推；最终目标矩形仍通过统一转换交给动画层。
+
 这部分仍需要真实 Windows 多屏组合继续验收。
 
 ## 开发入口
@@ -193,7 +211,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-真实文件定位使用 `uiautomation`。构建脚本会通过 PyInstaller `--collect-all uiautomation` 将相关运行时一起收进单文件 EXE。
+真实文件定位 / 真准星使用 `uiautomation`；Explorer 真实目录解析使用 `pywin32` 的 `Shell.Application`。构建脚本显式收集 `uiautomation`，并加入 `win32com.client / pythoncom / pywintypes` hidden imports。
 
 打包：
 
@@ -214,6 +232,9 @@ CI 在 Windows 上实际执行测试与 onefile 构建，避免只在源码模�
 
 ```text
 app/
+  aim_input.py           真准星期间的临时鼠标 / Esc 低级 Hook
+  aim_overlay.py         鼠标穿透准星与实时识别标签
+  aim_resolver.py        屏幕点 → UIA ListItem → 真实文件 Path
   autostart.py           Windows 开机启动
   character.py           角色参数与锚点配置
   chibi_avatar.py        精灵播放器与动作状态机
@@ -223,7 +244,7 @@ app/
   direct_overlay.py      已知真实目标坐标的无准星任务 Overlay
   interactions.py        Pet 互动 Provider
   pet_widget.py          常驻小人、拖动、气泡与视觉锚点
-  resident_controller.py 常驻生命周期、托盘、回 Home 与任务 session
+  resident_controller.py 常驻生命周期、托盘、真准星、回 Home 与任务 session
   resident_transition.py Pet ↔ 执行尺寸的脚底锚定 morph
   responsive_overlay.py  非阻塞删除动画 Overlay
   single_instance.py     QLocalServer / QLocalSocket IPC
@@ -237,4 +258,4 @@ characters/jiaqi/
     victory.png
 ```
 
-当前不计划加入音效。下一步是把“瞄一个倒霉文件”做成真正能识别屏幕下方文件的准星。
+当前不计划加入音效。下一阶段以 Windows 实机真准星、多屏 / DPI 和最终交付体验验收为主，再决定是否进入安装包、自动更新或 AI 互动等扩展。
