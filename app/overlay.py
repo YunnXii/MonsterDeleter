@@ -21,6 +21,46 @@ from .explosion import ExplosionWidget
 from .flying_icon import FlyingIcon, system_icon_pixmap
 
 
+MIN_WALK_DURATION_MS = 900
+STOP_REQUEST_LEAD_MS = 60
+WALK_FIRST_SAFE_STOP_MS = (
+    sum(ChibiAvatar.WALK_START_DURATIONS)
+    + ChibiAvatar.WALK_CRUISE_DURATIONS[0]
+)
+WALK_CRUISE_CYCLE_MS = sum(ChibiAvatar.WALK_CRUISE_DURATIONS)
+
+
+def phase_aligned_walk_duration_ms(distance_px: int, walk_speed: int) -> int:
+    """Choose a travel duration that ends on a legal source-frame-3 stop phase.
+
+    The stop animation may only begin after source walk frame 3 finishes. Instead
+    of reaching the pre-stop point first and then waiting up to a whole gait
+    cycle, quantize the positional animation duration to the nearest legal stop
+    phase before walking starts. When two phases bracket the nominal duration,
+    choose the one that changes effective walking speed the least.
+    """
+    if walk_speed <= 0:
+        raise ValueError("walk_speed must be positive")
+
+    nominal_ms = max(
+        MIN_WALK_DURATION_MS,
+        round(max(0, distance_px) * 1000 / walk_speed),
+    )
+    if nominal_ms <= WALK_FIRST_SAFE_STOP_MS:
+        return WALK_FIRST_SAFE_STOP_MS
+
+    relative = nominal_ms - WALK_FIRST_SAFE_STOP_MS
+    lower_cycles = max(0, relative // WALK_CRUISE_CYCLE_MS)
+    lower = WALK_FIRST_SAFE_STOP_MS + lower_cycles * WALK_CRUISE_CYCLE_MS
+    upper = lower + WALK_CRUISE_CYCLE_MS
+
+    def speed_error(duration_ms: int) -> float:
+        # Effective speed scales with nominal_ms / duration_ms.
+        return abs(nominal_ms / duration_ms - 1.0)
+
+    return min((lower, upper), key=speed_error)
+
+
 class DesktopCleanerOverlay(QWidget):
     WALK_BRAKE_MS = sum(ChibiAvatar.WALK_STOP_DURATIONS)
 
@@ -51,6 +91,13 @@ class DesktopCleanerOverlay(QWidget):
         self.avatar.animation_finished.connect(self._on_avatar_animation_finished)
         self.avatar.walk_stop_started.connect(self._start_walk_brake)
         self.avatar.walk_stopped.connect(self._on_walk_stopped)
+
+        # A dedicated precise one-shot timer requests braking shortly before the
+        # precomputed legal frame-3 boundary. It can be cancelled safely on retry.
+        self.walk_stop_timer = QTimer(self)
+        self.walk_stop_timer.setSingleShot(True)
+        self.walk_stop_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.walk_stop_timer.timeout.connect(self.avatar.request_walk_stop)
 
         self.explosion = ExplosionWidget(self)
         self.explosion.hide()
@@ -203,21 +250,32 @@ class DesktopCleanerOverlay(QWidget):
         self.avatar.move(start)
         self.avatar.show()
         self.avatar.raise_()
-        self.avatar.play_walk()
 
         distance = abs(pre_stop.x() - start.x())
-        duration = max(900, int(distance * 1000 / max(1, self.config.walk_speed)))
+        duration = phase_aligned_walk_duration_ms(distance, self.config.walk_speed)
+
         self.walk_animation = QPropertyAnimation(self.avatar, b"pos", self)
         self.walk_animation.setDuration(duration)
         self.walk_animation.setStartValue(start)
         self.walk_animation.setEndValue(pre_stop)
         self.walk_animation.setEasingCurve(QEasingCurve.Type.Linear)
-        self.walk_animation.finished.connect(self.avatar.request_walk_stop)
+
+        # Start sprite timing and positional timing together. The stop request is
+        # sent inside the final source-frame-3 hold, so the next avatar tick can
+        # enter braking immediately rather than completing another gait cycle.
+        self.avatar.play_walk()
         self.walk_animation.start()
+        self.walk_stop_timer.start(max(1, duration - STOP_REQUEST_LEAD_MS))
 
     def _start_walk_brake(self) -> None:
         if self._walk_end is None:
             return
+
+        self.walk_stop_timer.stop()
+        walk_animation = getattr(self, "walk_animation", None)
+        if walk_animation is not None:
+            walk_animation.stop()
+
         self.brake_animation = QPropertyAnimation(self.avatar, b"pos", self)
         self.brake_animation.setDuration(self.WALK_BRAKE_MS)
         self.brake_animation.setStartValue(self.avatar.pos())
@@ -256,6 +314,7 @@ class DesktopCleanerOverlay(QWidget):
         self.avatar.play_turn_to_target()
 
     def _stop_motion_animations(self) -> None:
+        self.walk_stop_timer.stop()
         for name in ("walk_animation", "brake_animation", "exit_animation"):
             animation = getattr(self, name, None)
             if animation is not None:
