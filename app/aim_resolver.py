@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import time
 from dataclasses import dataclass
 from enum import Enum, auto as enum_auto
 from pathlib import Path
@@ -22,6 +23,9 @@ MAX_PARENT_HOPS = 14
 MAX_DESKTOP_HIT_CONTROLS = 3000
 DESKTOP_HIT_MARGIN_X = 7
 DESKTOP_HIT_MARGIN_Y = 5
+HOVER_HOLD_SECONDS = 0.32
+HOVER_HOLD_MARGIN_X = 12
+HOVER_HOLD_MARGIN_Y = 9
 
 
 class AimStatus(Enum):
@@ -68,6 +72,10 @@ class _HitItem:
     root_class: str
     root_handle: int
     desktop_root: bool
+
+
+_LAST_PROBE_RESULT: AimProbeResult | None = None
+_LAST_PROBE_AT = 0.0
 
 
 class AimTaskSignals(QObject):
@@ -317,8 +325,7 @@ def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
     )
 
 
-def probe_shell_item_at(point: tuple[int, int]) -> AimProbeResult:
-    """Lightweight hover probe: identify a Desktop/Explorer ListItem by name only."""
+def _probe_shell_item_once(point: tuple[int, int]) -> AimProbeResult:
     if os.name != "nt":
         return AimProbeResult(AimStatus.UNSUPPORTED, message="真准星目前只支持 Windows。")
 
@@ -335,6 +342,59 @@ def probe_shell_item_at(point: tuple[int, int]) -> AimProbeResult:
             return AimProbeResult(AimStatus.FOUND, name=hit.name, target=hit.target)
     except Exception as exc:
         return AimProbeResult(AimStatus.ERROR, message=f"这儿有点看不清：{exc}")
+
+
+def probe_shell_item_at(point: tuple[int, int]) -> AimProbeResult:
+    """Hover probe with a short visual-only hysteresis window.
+
+    A single flaky Desktop UIA sample should not make a valid label flash red.
+    Reuse the most recent reliable hover for a few hundred milliseconds only
+    while the cursor still lies over that same item's physical rectangle. Click
+    selection does NOT use this cache; resolve_shell_item_at always probes again.
+    """
+    global _LAST_PROBE_RESULT, _LAST_PROBE_AT
+
+    result = _probe_shell_item_once(point)
+    now = time.monotonic()
+    if result.ok and result.name:
+        _LAST_PROBE_RESULT = result
+        _LAST_PROBE_AT = now
+        return result
+
+    cached = _LAST_PROBE_RESULT
+    if (
+        cached is not None
+        and cached.ok
+        and cached.target is not None
+        and now - _LAST_PROBE_AT <= HOVER_HOLD_SECONDS
+        and point_hits_physical_target(
+            point,
+            cached.target,
+            margin_x=HOVER_HOLD_MARGIN_X,
+            margin_y=HOVER_HOLD_MARGIN_Y,
+        )
+    ):
+        return cached
+
+    if cached is not None and (
+        now - _LAST_PROBE_AT > HOVER_HOLD_SECONDS
+        or cached.target is None
+        or not point_hits_physical_target(
+            point,
+            cached.target,
+            margin_x=HOVER_HOLD_MARGIN_X,
+            margin_y=HOVER_HOLD_MARGIN_Y,
+        )
+    ):
+        _LAST_PROBE_RESULT = None
+        _LAST_PROBE_AT = 0.0
+    return result
+
+
+def _reset_probe_cache_for_tests() -> None:
+    global _LAST_PROBE_RESULT, _LAST_PROBE_AT
+    _LAST_PROBE_RESULT = None
+    _LAST_PROBE_AT = 0.0
 
 
 def _matching_entries(folder: Path, accessible_name: str) -> list[Path]:
