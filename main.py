@@ -14,7 +14,12 @@ from app.kick_calibrator import KickCalibrationOverlay
 from app.resident_controller import ResidentController
 from app.responsive_overlay import ResponsiveDesktopCleanerOverlay
 from app.resources import resource_path
-from app.single_instance import LocalCommandServer, make_command, send_command
+from app.single_instance import (
+    LocalCommandServer,
+    ResidentAlreadyRunning,
+    make_command,
+    send_command,
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -112,6 +117,12 @@ def main(argv: list[str] | None = None) -> int:
     command_server = LocalCommandServer(app)
     try:
         command_server.start()
+    except ResidentAlreadyRunning:
+        # Two instances can be launched inside the same few hundred ms. The
+        # process that lost the server-name race simply retries delivery once.
+        if send_command(initial_command, timeout_ms=1000):
+            return 0
+        return show_status("叫家琦来", "已有常驻实例，但这次没联系上它。", False)
     except RuntimeError as exc:
         return show_status("叫家琦来", str(exc), False)
 
