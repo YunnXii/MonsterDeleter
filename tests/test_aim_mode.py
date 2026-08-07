@@ -20,13 +20,14 @@ def test_hidden_extension_name_resolves_to_real_file(tmp_path) -> None:
     assert _matching_entries(tmp_path, "年度总结.docx") == [target]
 
 
-def test_exact_folder_name_wins_over_file_stem(tmp_path) -> None:
+def test_hidden_extension_collision_stays_ambiguous(tmp_path) -> None:
     folder = tmp_path / "资料"
     folder.mkdir()
     file = tmp_path / "资料.docx"
     file.write_text("demo", encoding="utf-8")
 
-    assert _matching_entries(tmp_path, "资料") == [folder]
+    matches = _matching_entries(tmp_path, "资料")
+    assert set(matches) == {folder, file}
 
 
 def test_probe_result_reports_real_shell_item() -> None:
