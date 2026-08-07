@@ -1,0 +1,22 @@
+{
+  "name": "家琦",
+  "menu_text": "叫家琦来收拾它",
+  "prompt_text": "请点一下「{target}」现在所在的位置",
+  "confirm_text": "对，收拾它",
+  "retry_text": "等等，我点偏了",
+  "success_text": "好了。桌面文明程度上升了 0.01%。",
+  "failure_text": "这东西有点倔：{detail}",
+  "width": 280,
+  "height": 320,
+  "fps": 12,
+  "look": {
+    "skin": "#E2B18E",
+    "hair": "#171719",
+    "shirt": "#939B9D",
+    "shirt_dark": "#616A6D",
+    "pants": "#2E3740",
+    "shoes": "#F2F3F4",
+    "glasses": "#16191C",
+    "glasses_accent": "#B59A62"
+  }
+}
