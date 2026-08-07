@@ -38,10 +38,10 @@ def test_animation_director_constants_match_plan() -> None:
     assert ChibiAvatar.WALK_CRUISE == (2, 5, 3, 1)
     assert ChibiAvatar.WALK_CRUISE_DURATIONS == (105, 85, 105, 85)
     assert ChibiAvatar.WALK_RENDER_OFFSETS == {
-        2: QPoint(0, 0),
-        5: QPoint(0, 0),
-        3: QPoint(-1, 0),
-        1: QPoint(1, -1),
+        2: QPoint(-2, 0),
+        5: QPoint(-1, 0),
+        3: QPoint(1, 0),
+        1: QPoint(2, -1),
     }
     assert ChibiAvatar.WALK_STOP == (5, 6, 7, 8)
     assert ChibiAvatar.WALK_STOP_DURATIONS == (120, 140, 160, 220)
