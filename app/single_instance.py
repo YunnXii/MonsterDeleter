@@ -46,9 +46,15 @@ def send_command(command: dict[str, object], *, timeout_ms: int = 650) -> bool:
     if not socket.waitForConnected(timeout_ms):
         return False
 
-    socket.write(encode_command(command))
+    if socket.write(encode_command(command)) < 0:
+        socket.abort()
+        return False
     socket.flush()
-    ok = socket.waitForBytesWritten(timeout_ms)
+
+    # Local sockets can drain a tiny JSON command synchronously. In that case
+    # waitForBytesWritten() may have nothing left to wait for, which is success,
+    # not a failed IPC send.
+    ok = socket.bytesToWrite() == 0 or socket.waitForBytesWritten(timeout_ms)
     socket.disconnectFromServer()
     return bool(ok)
 
