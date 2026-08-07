@@ -34,6 +34,7 @@ class CharacterConfig:
     impact_y: int
     walk_speed: int
     stop_distance: int
+    waiting_offset: int
     look: CharacterLook
 
     @classmethod
@@ -55,5 +56,6 @@ class CharacterConfig:
             impact_y=int(data.get("impact_y", 151)),
             walk_speed=int(data.get("walk_speed", 430)),
             stop_distance=int(data.get("stop_distance", 88)),
+            waiting_offset=int(data.get("waiting_offset", 40)),
             look=look,
         )
