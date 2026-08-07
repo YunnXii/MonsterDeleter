@@ -216,24 +216,26 @@ def probe_shell_item_at(point: tuple[int, int]) -> AimProbeResult:
 
 
 def _matching_entries(folder: Path, accessible_name: str) -> list[Path]:
-    """Match Explorer's accessible name, including hidden-extension displays."""
+    """Match display names conservatively when Explorer may hide extensions."""
     folded = accessible_name.strip().casefold()
     if not folded or not folder.is_dir():
         return []
 
-    matches: list[Path] = []
     try:
         entries = list(folder.iterdir())
     except OSError:
         return []
 
-    exact = [entry for entry in entries if entry.name.casefold() == folded]
-    if exact:
-        return exact
-
+    matches: list[Path] = []
+    seen: set[str] = set()
     for entry in entries:
-        if entry.stem.casefold() == folded:
-            matches.append(entry)
+        if entry.name.casefold() != folded and entry.stem.casefold() != folded:
+            continue
+        key = os.path.normcase(os.path.abspath(str(entry)))
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(entry)
     return matches
 
 
