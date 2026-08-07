@@ -12,7 +12,8 @@ class MenuRegistrationResult:
     message: str
 
 
-MENU_KEY = "JiaqiDesktopCleaner"
+# Reuse the original key so installing this branch replaces the old monster item.
+MENU_KEY = "SummonMonster"
 
 
 def _command_line() -> str:
