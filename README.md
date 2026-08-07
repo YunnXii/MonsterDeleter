@@ -1,10 +1,10 @@
 # 叫家琦来：文件清理小剧场
 
-这是从 `MonsterDeleter` 改造而来的 Windows 文件清理工具。现在它不再只是“一次性启动一个删除动画”，而是一个常驻桌面的 Q 版家琦：平时蹲在右下角，收到任务后再去收拾倒霉文件。
+这是从 `MonsterDeleter` 改造而来的 Windows 文件清理工具。现在它已经是一个常驻桌面的 Q 版家琦：平时待在桌面角落，收到任务后走到目标旁边确认，再一脚把倒霉文件踹进回收站。
 
-核心删除动画已经封版；当前开发重点转向常驻桌面宠物、真实文件定位、真准星、右键菜单、托盘、多显示器和单 EXE 日用体验。
+核心删除动画已经封版，当前开发重点是常驻桌面宠物、真实文件定位、真准星、托盘、多显示器和单 EXE 日用体验。
 
-## 首次运行与常驻
+## 当前使用方式
 
 直接运行：
 
@@ -14,36 +14,66 @@ python main.py
 
 或双击打包后的 `叫家琦来.exe`。
 
-程序会：
+程序会自动安装 / 修复当前用户的文件和文件夹右键菜单，并常驻后台。桌面会出现一个小号 Q 版家琦，同时注册系统托盘作为兜底入口。
 
-- 自动检查并安装当前用户的“叫家琦来收拾它”文件 / 文件夹右键菜单；
-- 如果 EXE 或源码目录换了位置，自动修复注册表里的旧路径；
-- 进入常驻模式，而不是直接播放全屏动画；
-- 在桌面右下角显示一个小号 Q 版家琦；
-- 同时注册系统托盘图标作为兜底入口。
+### 模式一：文件右键 —— 已完成
 
-右键菜单写在 `HKEY_CURRENT_USER`，不要求管理员权限。
+1. 在桌面或 Explorer 中右键一个文件 / 文件夹；
+2. 选择“叫家琦来收拾它”；
+3. 新启动的进程把完整 Path 通过本地 IPC 发给常驻实例后立即退出；
+4. 常驻实例在后台通过 Windows UI Automation 查找这个 Path 对应的可见文件项；
+5. 找到后直接取得文件图标的真实屏幕矩形，不再出现旧准星；
+6. 小号 Pet 隐藏，正常尺寸家琦从 Pet 所在位置出发；
+7. 走到目标附近问“就是「xxx」？”；
+8. 确认后执行已经封版的踢飞动画和回收站逻辑。
 
-也可以显式执行：
+同一屏幕时，正常尺寸角色从常驻小人的脚底位置直接出发；如果 Pet 与目标位于不同显示器，则从目标屏幕距离 Pet 更近的一侧进入，避免用侧身走路精灵跨屏斜穿造成奇怪观感。
 
-```powershell
-python main.py --install-menu
-python main.py --uninstall-menu
+定位时不会只凭文件名随便猜：
+
+- 同时匹配完整文件名和隐藏扩展名时 Explorer 可能暴露的名称；
+- 优先采用右键操作后仍保持 `Selected` 状态的 ListItem；
+- 结合前台 Explorer 窗口、桌面 / 普通 Explorer 场景进行评分；
+- 多个同名项仍无法确认时直接拒绝猜测。
+
+如果文件所在的桌面或 Explorer 窗口没有露出来，会提示：
+
+```text
+我知道要踹谁，但没看见它站哪儿。
+把文件所在的桌面或文件夹窗口露出来，再叫我一次。
 ```
+
+如果同名项目过多且无法确认，会提示用户把目标窗口放到前面再试。不会退回旧的“随便点个坐标”模式。
+
+### 模式二：右键常驻小人 → 瞄一个倒霉文件 —— 下一阶段
+
+这一项目前仍刻意保持占位，不调用旧假准星。
+
+下一阶段会实现：
+
+```text
+屏幕坐标
+→ UI Automation / Shell 命中测试
+→ 真实文件 Path + 文件矩形
+→ 家琦直接走过去确认
+```
+
+完成以后，两种入口最终都会统一成同一种内部任务：`真实 Path + 真实屏幕位置`。
 
 ## 常驻小人
 
-当前常驻小人已经支持：
+当前支持：
 
-- 左键点击：播放本地随机趣味台词；
-- 连续猛点：进入另一组吐槽台词；
-- 左键按住并拖动：自由移动位置；
-- 拖动位置使用 `QSettings` 保存，下次启动继续待在原处；
-- 显示器被拔掉或保存位置跑出所有屏幕时，自动回到主屏右下角；
-- 右键：打开小人菜单；
-- 系统托盘：即使小人被隐藏，也可以重新叫回来。
+- 左键点击：随机趣味台词；
+- 连续猛点：额外吐槽；
+- 左键按住拖动：自由移动；
+- 使用 `QSettings` 记住位置；
+- 显示器变化导致位置失效时自动回主屏右下角；
+- 右键打开功能菜单；
+- 系统托盘兜底；
+- 当前用户级开机启动。
 
-右键菜单目前包括：
+右键菜单：
 
 ```text
 瞄一个倒霉文件
@@ -55,73 +85,30 @@ python main.py --uninstall-menu
 退出
 ```
 
-“开机启动”使用当前用户的 Windows Run 注册表项，不需要管理员权限。
+Pet 点击互动通过 `InteractionProvider` 抽象。当前使用 `RandomQuipProvider`，未来可替换为 AI 对话 Provider，而不需要重写拖动、托盘、IPC 或删除逻辑。
 
-### 趣味互动为未来 AI 留好了接口
+## 单实例与 IPC
 
-Pet 本身不直接写死 `random.choice(...)`。点击只发出互动请求，台词由 `InteractionProvider` 提供。
+程序采用单实例常驻架构。已有实例运行时，再启动 EXE 不会生成第二只家琦。
 
-当前使用：
-
-```text
-RandomQuipProvider
-```
-
-未来可以替换成：
-
-```text
-AIChatProvider
-```
-
-这样以后把左键点击升级为 AI 对话时，不需要推翻拖动、托盘、IPC 或删除动画。
-
-## 单实例与右键菜单 IPC
-
-程序现在是单实例常驻架构。
-
-当后台已经有一只家琦时，再次双击 EXE只会唤醒已有实例，不会再生成第二只。
-
-文件右键菜单仍然启动同一个 EXE，但新进程只负责：
+右键菜单启动的新进程只负责：
 
 ```text
 收到文件 Path
-→ 连接本地 QLocalServer
-→ 把 Path 发给常驻实例
-→ 立即退出
+→ 连接 QLocalServer
+→ 发送 Path
+→ 退出
 ```
 
-主实例使用 `QLocalServer / QLocalSocket` 接收任务，不开放 TCP 端口，也不经过 Windows 防火墙。
-
-任务执行期间如果又收到第二个目标，第一版不排队，会提示：
+任务执行或目标解析期间暂不排队，新的请求会提示：
 
 ```text
 手上正踹着一个呢，等等。
 ```
 
-## 当前阶段：真实目标定位还没有伪装成“做完了”
-
-常驻架构已经完成，但下面两项刻意留到下一阶段单独实现：
-
-1. **已知 Path → 自动找到桌面 / Explorer 中这个文件的真实屏幕矩形**；
-2. **真准星：屏幕坐标 → UI Automation / Shell 元素 → 真实文件 Path**。
-
-因此当前分支中，文件右键任务虽然已经通过 IPC 交给常驻实例，进入现有 Cleaner session 后仍暂时需要旧的“点击目标位置”步骤。
-
-右键小人的“瞄一个倒霉文件”也不会偷偷调用旧假准星；目前只提示真准星尚在接线。
-
-下一阶段完成后，最终交互会变成：
-
-```text
-模式一：文件右键
-文件 Path → 自动定位图标 → 不出现准星 → 家琦直接走过去确认
-
-模式二：右键小人 → 瞄一个倒霉文件
-真准星识别鼠标下面的实际文件 → 得到 Path + 屏幕矩形 → 家琦走过去确认
-```
-
 ## 删除动画与失败处理
 
-执行任务时仍然使用已经调好的动画状态机：
+动画导演已封版：
 
 ```text
 起步：1 → 2 → 3
@@ -131,8 +118,9 @@ AIChatProvider
 等待：第 9 帧正面 + 1px 呼吸，停在攻击位外侧 40px
 确认：9 → 8 → 7，同时前移 40px
 攻击：转身完成 + 前移完成 → Kick
-命中：Kick 5 → 回收站任务
+命中：Kick 5 → 后台回收站任务
 成功：爆炸 + 图标抛飞 → 扶眼镜 → 微笑 → 冷脸
+失败：自然收腿 → 正面提示 → 重试 / 快速溜走
 ```
 
 关键参数：
@@ -143,9 +131,9 @@ AIChatProvider
 - 等待位额外外移 `40px`；
 - Kick 第 5 帧是唯一命中帧。
 
-删除操作运行在后台 `QRunnable` 中。Office / Windows Shell 即使花一两秒才返回“文件被占用”，也不会再把人物冻结在飞踢帧。
+删除运行在后台 `QRunnable`，Office / Shell 返回文件占用错误时不会冻结飞踢动画。
 
-文件占用时显示：
+文件占用提示：
 
 ```text
 这玩意正开着呢，踹不动。
@@ -153,41 +141,23 @@ AIChatProvider
 [关了再踹一次]  [不踹了]
 ```
 
-“关了再踹一次”会原地重新转身开踹；“不踹了”会转向最近屏幕边缘快速溜走。
-
 成功台词：
 
 ```text
 这倒霉文件已经踹飞了。
 ```
 
-## 图标抛飞
+## DPI 与多屏
 
-不会直接移动 Explorer 的真实桌面图标。程序会在删除前读取目标的系统图标，成功后生成一个透明图标替身：
-
-- 水平初速度约 `1050 px/s`；
-- 向上初速度约 `680 px/s`；
-- 重力约 `1650 px/s²`；
-- 自旋约 `720°/s`；
-- 飞出舞台后自动销毁。
-
-## 多屏与 DPI
-
-当前 Cleaner session 会在用户选定目标位置后锁定到目标所在显示器，后续站位、踢击、对话框和离场使用该显示器自己的 Qt 逻辑坐标。
-
-常驻 Pet 的保存位置也会检查全部显示器的 `availableGeometry()`；显示器配置变化导致旧位置失效时，会自动回到主屏右下角。
+UI Automation 的 `BoundingRectangle` 使用 Windows 物理像素，而 Qt 在高 DPI 下使用逻辑坐标。`target_resolver.py` 会根据目标所在显示器的物理边界和 `QScreen.devicePixelRatio()` 将命中位置转换成 Qt 全局逻辑坐标，再交给动画舞台。
 
 目标继续覆盖：
 
 - 主屏 / 副屏；
-- 副屏在主屏左侧或右侧；
+- 副屏位于主屏左侧或右侧；
 - 100% / 150% / 200% Windows 缩放。
 
-## 应用图标
-
-`tools/build_app_icon.py` 会从最终 `walk.png` 第 9 帧自动裁取正面 Q 版头像，生成多尺寸 `build/app.ico`。
-
-打包版将它用于 EXE、右键菜单和系统托盘。源码模式如果还没生成 `.ico`，程序会直接从 Walk 第 9 帧现场生成 Qt 图标作为兜底。
+这部分仍需要真实 Windows 多屏组合继续验收。
 
 ## 开发入口
 
@@ -203,9 +173,18 @@ Kick 命中校准：
 python main.py --calibrate-kick
 ```
 
-这两个入口保持独立，不接入常驻单实例，避免开发工具受后台 Pet 干扰。
+这两个入口保持独立，不接入常驻单实例。
 
-## 打包
+## 依赖与打包
+
+```powershell
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+真实文件定位使用 `uiautomation`。构建脚本会通过 PyInstaller `--collect-all uiautomation` 将相关运行时一起收进单文件 EXE。
+
+打包：
 
 ```powershell
 pip install -r requirements.txt
@@ -218,29 +197,9 @@ pip install -r requirements.txt
 dist\叫家琦来.exe
 ```
 
-CI 会在 Windows 上实际执行同一套 onefile 构建，并保留短期 `JiaqiCleaner-Windows` 构建产物。
+CI 在 Windows 上实际执行测试与 onefile 构建，避免只在源码模式工作。
 
-## 测试
-
-```powershell
-pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-`pytest.ini` 继续明确排除旧的手工 `test_uiauto.py`，但现在会运行所有维护中的回归套件，包括：
-
-- 精灵图标准帧结构；
-- 走路相位、等待位与攻击位；
-- 异步删除；
-- Windows HRESULT 错误分类；
-- 失败恢复 / 重试 / 快速溜走；
-- 右键菜单注册；
-- 单实例 IPC 协议；
-- 常驻随机互动 Provider；
-- PetWidget Qt 离屏烟测；
-- Kick 校准器与基础 Qt 构建。
-
-## 项目结构
+## 主要结构
 
 ```text
 app/
@@ -250,22 +209,20 @@ app/
   context_menu.py        文件 / 文件夹右键菜单
   delete_service.py      回收站、错误分类与 Shell 刷新
   delete_task.py         后台删除 QRunnable
-  interactions.py        Pet 互动 Provider 接口与随机吐槽
+  direct_overlay.py      已知真实目标坐标的无准星任务 Overlay
+  interactions.py        Pet 互动 Provider
   pet_widget.py          常驻小人、拖动与气泡
-  resident_controller.py 常驻生命周期、托盘、任务 session
+  resident_controller.py 常驻生命周期、托盘、目标解析与任务 session
   responsive_overlay.py  非阻塞删除动画 Overlay
   single_instance.py     QLocalServer / QLocalSocket IPC
-  overlay.py             多屏舞台与主动画流程
+  target_resolver.py     Path → Desktop / Explorer 可见文件矩形
+  overlay.py             基础舞台与封版动画流程
 characters/jiaqi/
   character.json
   sprites/
     walk.png
     kick.png
     victory.png
-tools/
-  build_app_icon.py
-main.py
-build.ps1
 ```
 
-当前不计划加入音效，先把常驻、真实目标识别和日用体验做稳。
+当前不计划加入音效。下一步是把“瞄一个倒霉文件”做成真正能识别屏幕下方文件的准星。
