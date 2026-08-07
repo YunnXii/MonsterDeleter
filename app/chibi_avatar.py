@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from enum import Enum, auto
 from typing import Callable
 
@@ -25,9 +24,13 @@ class ChibiAvatar(QWidget):
     walk_stop_started = pyqtSignal()
     walk_stopped = pyqtSignal()
 
+    # Source art is numbered 1..9. Runtime indices are zero-based.
+    # Start: 1 -> 2 -> 3
+    # Cruise: 4 <-> 3 (alternate legs)
+    # Stop: after frame 3 finishes, jump to 6 -> 7 -> 8 -> 9.
     WALK_START = (0, 1, 2)
-    WALK_CRUISE = (3, 2)  # 原图第4帧 ↔ 第3帧：左右腿交替
-    WALK_STOP = (5, 6, 7, 8)  # 只能从第3帧接第6帧开始收步
+    WALK_CRUISE = (3, 2)
+    WALK_STOP = (5, 6, 7, 8)
 
     def __init__(self, config: CharacterConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -69,20 +72,11 @@ class ChibiAvatar(QWidget):
         return self._sprite_frame
 
     def _load_strip(self, filename: str, frame_count: int) -> list[QPixmap]:
-        sprite_dir = resource_path("characters", "jiaqi", "sprites")
-        path = sprite_dir / filename
-        sheet = QPixmap(str(path)) if path.exists() else QPixmap()
+        path = resource_path("characters", "jiaqi", "sprites", filename)
+        if not path.exists():
+            raise RuntimeError(f"找不到角色精灵图：{path}")
 
-        # Web 端修改仓库时二进制素材以有序 base64 分片保存；
-        # 如果以后直接放入同名 PNG，这段会自动优先使用 PNG。
-        if sheet.isNull():
-            part_paths = sorted(sprite_dir.glob(f"{filename}.b64.*"))
-            if part_paths:
-                encoded = "".join(
-                    part.read_text(encoding="ascii").strip() for part in part_paths
-                )
-                sheet.loadFromData(base64.b64decode(encoded), "PNG")
-
+        sheet = QPixmap(str(path))
         if sheet.isNull():
             raise RuntimeError(f"无法加载角色精灵图：{path}")
         if sheet.width() % frame_count != 0:
@@ -113,7 +107,7 @@ class ChibiAvatar(QWidget):
         self.stop()
         self._action = AvatarAction.IDLE
         self._walk_phase = "idle"
-        # 收尾图最后一帧：稳定的侧身冷脸站姿。
+        # Victory sheet frame 6 is the stable side-facing cold expression.
         self._sprite_frame = 5
         self.update()
 
@@ -133,7 +127,7 @@ class ChibiAvatar(QWidget):
             self._pending_walk_stop = True
 
     def play_walk_cruise(self) -> None:
-        """Directly use the two-frame walk cycle when leaving the screen."""
+        """Use only the two alternating leg frames when leaving the screen."""
         self._action = AvatarAction.WALK
         self._walk_phase = "cruise"
         self._pending_walk_stop = False
@@ -215,8 +209,8 @@ class ChibiAvatar(QWidget):
         self._timer.start(durations[0])
 
     def _advance(self) -> None:
-        # 用户指定的剪辑点：巡航收到停车请求后，必须等到原图第3帧
-        # （零基索引 2）播放结束，再接原图第6帧开始收步。
+        # Stop requests are phase-locked: frame 4 can never jump directly into the
+        # braking artwork. We finish source frame 3 (zero-based index 2) first.
         if (
             self._action is AvatarAction.WALK
             and self._walk_phase == "cruise"
@@ -243,7 +237,7 @@ class ChibiAvatar(QWidget):
 
     def _show_frame(self, frame_index: int) -> None:
         self._sprite_frame = frame_index
-        # 踢击图第5帧是脚完全伸直且带冲击星芒的唯一命中帧。
+        # Kick sheet frame 5 is the single fully extended impact pose.
         if (
             self._action is AvatarAction.KICK
             and frame_index == 4
