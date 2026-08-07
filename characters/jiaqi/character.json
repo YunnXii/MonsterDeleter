@@ -9,10 +9,11 @@
   "width": 280,
   "height": 298,
   "fps": 12,
-  "impact_x": 236,
-  "impact_y": 132,
+  "impact_x": 234,
+  "impact_y": 136,
   "walk_speed": 390,
   "stop_distance": 77,
+  "waiting_offset": 40,
   "look": {
     "skin": "#E2B18E",
     "hair": "#171719",
