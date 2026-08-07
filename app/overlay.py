@@ -18,6 +18,7 @@ from .character import CharacterConfig
 from .chibi_avatar import AvatarAction, ChibiAvatar
 from .delete_service import DeleteResult, move_to_recycle_bin
 from .explosion import ExplosionWidget
+from .flying_icon import FlyingIcon, system_icon_pixmap
 
 
 class DesktopCleanerOverlay(QWidget):
@@ -33,6 +34,7 @@ class DesktopCleanerOverlay(QWidget):
         self._deleted = False
         self._delete_result: DeleteResult | None = None
         self._walk_end: QPoint | None = None
+        self.flying_icon: FlyingIcon | None = None
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -259,9 +261,16 @@ class DesktopCleanerOverlay(QWidget):
             if animation is not None:
                 animation.stop()
 
+    def _stop_flying_icon(self) -> None:
+        if self.flying_icon is not None:
+            self.flying_icon.stop()
+            self.flying_icon.deleteLater()
+            self.flying_icon = None
+
     def _retry(self) -> None:
         self.dialog.hide()
         self._stop_motion_animations()
+        self._stop_flying_icon()
         self.avatar.stop()
         self.avatar.hide()
         self.target_pos = None
@@ -278,16 +287,33 @@ class DesktopCleanerOverlay(QWidget):
         self._set_crosshair_cursor()
         self.update()
 
+    def _launch_flying_icon(self, pixmap: QPixmap) -> None:
+        if self.target_pos is None:
+            return
+        self._stop_flying_icon()
+        self.flying_icon = FlyingIcon(pixmap, self)
+        direction = 1 if self.target_pos.x() >= self.width() // 2 else -1
+        self.flying_icon.launch(self.target_pos, direction=direction)
+
     def _on_impact(self) -> None:
         if self._deleted or self.target_pos is None:
             return
         self._deleted = True
+
+        # Capture the system icon before send2trash moves the target away.
+        icon_pixmap = system_icon_pixmap(self.target)
         self._delete_result = move_to_recycle_bin(self.target, demo=self.demo)
+
         self.explosion.move(
             self.target_pos.x() - self.explosion.width() // 2,
             self.target_pos.y() - self.explosion.height() // 2,
         )
         self.explosion.play()
+
+        # Only sell the illusion if the operation actually succeeded. Demo mode
+        # reports success without touching the file, so it remains fully testable.
+        if self._delete_result.ok:
+            self._launch_flying_icon(icon_pixmap)
 
     def _on_avatar_animation_finished(self) -> None:
         if self.avatar.current_action is AvatarAction.TURN:
@@ -322,6 +348,7 @@ class DesktopCleanerOverlay(QWidget):
 
     def _exit(self) -> None:
         self._stop_motion_animations()
+        self._stop_flying_icon()
         self.avatar.stop()
         self.close()
         QTimer.singleShot(0, QApplication.instance().quit)
