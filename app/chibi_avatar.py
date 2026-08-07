@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum, auto
 from typing import Callable
 
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QWidget
 
@@ -28,14 +28,26 @@ class ChibiAvatar(QWidget):
 
     # Source art is numbered 1..9. Runtime indices are zero-based.
     # Start: 1 -> 2 -> 3
-    # Cruise experiment: 3 -> 6 -> 4 -> 2, then loop.
+    # Cruise: 3 -> 6 -> 4 -> 2, then loop.
     # Stop: after frame 3 finishes, continue 6 -> 7 -> 8 -> 9.
     WALK_START = (0, 1, 2)
     WALK_START_DURATIONS = (140, 120, 110)
     WALK_CRUISE = (2, 5, 3, 1)
-    WALK_CRUISE_DURATIONS = (120, 120, 120, 120)
+    # Main stride poses get a little more screen time; compact transition poses
+    # pass more quickly. This makes the four-keyframe cycle feel less mechanical.
+    WALK_CRUISE_DURATIONS = (105, 85, 105, 85)
     WALK_STOP = (5, 6, 7, 8)
     WALK_STOP_DURATIONS = (120, 140, 160, 220)
+
+    # Offline measurement of the final walk.png showed only tiny head-centre
+    # differences. Keep the authoring-time result as four constants instead of
+    # doing any image analysis at runtime. These offsets apply to cruise only.
+    WALK_RENDER_OFFSETS = {
+        2: QPoint(0, 0),   # source frame 3
+        5: QPoint(0, 0),   # source frame 6
+        3: QPoint(-1, 0),  # source frame 4
+        1: QPoint(1, -1),  # source frame 2
+    }
 
     # Walk frame 9 faces the user. When the user confirms, briefly reverse the
     # final turn so the character looks back at the target before kicking.
@@ -178,7 +190,7 @@ class ChibiAvatar(QWidget):
             self._pending_walk_stop = True
 
     def play_walk_cruise(self) -> None:
-        """Loop the experimental four-pose walk cycle when leaving the screen."""
+        """Loop the four-pose walk cycle when leaving the screen."""
         self._stop_idle_bob()
         self._action = AvatarAction.WALK
         self._walk_phase = "cruise"
@@ -277,9 +289,9 @@ class ChibiAvatar(QWidget):
         self._timer.start(durations[0])
 
     def _advance(self) -> None:
-        # Stop requests are phase-locked: regardless of which experimental
-        # cruise pose is showing, source frame 3 (zero-based index 2) must
-        # finish before the braking artwork begins.
+        # Stop requests are phase-locked: regardless of which cruise pose is
+        # showing, source frame 3 (zero-based index 2) must finish before the
+        # braking artwork begins.
         if (
             self._action is AvatarAction.WALK
             and self._walk_phase == "cruise"
@@ -324,9 +336,14 @@ class ChibiAvatar(QWidget):
         else:
             frame = self._frames["victory"][self._sprite_frame]
 
+        render_offset = QPoint(0, self._bob_offset)
+        if self._action is AvatarAction.WALK and self._walk_phase == "cruise":
+            cruise_offset = self.WALK_RENDER_OFFSETS.get(self._sprite_frame, QPoint())
+            render_offset += cruise_offset
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         if not self._facing_right:
             painter.translate(self.width(), 0)
             painter.scale(-1, 1)
-        painter.drawPixmap(0, self._bob_offset, frame)
+        painter.drawPixmap(render_offset.x(), render_offset.y(), frame)
