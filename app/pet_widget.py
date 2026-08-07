@@ -120,6 +120,13 @@ class PetWidget(QWidget):
             self.show()
         self.bubble.show_message(text, self)
 
+    def foot_anchor_global(self) -> QPoint:
+        """Return the global foot/baseline anchor used to start a full-size task."""
+        return QPoint(
+            self.x() + self.width() // 2,
+            self.y() + self.height() - 4,
+        )
+
     def snap_to_default(self) -> None:
         center = self.frameGeometry().center()
         screen = QApplication.screenAt(center) or QApplication.primaryScreen()
