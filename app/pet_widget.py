@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QPoint, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
@@ -120,11 +120,18 @@ class PetWidget(QWidget):
             self.show()
         self.bubble.show_message(text, self)
 
+    def visual_rect_global(self) -> QRect:
+        """Return the exact on-screen rectangle occupied by the painted sprite."""
+        x = self.x() + (self.width() - self._pixmap.width()) // 2
+        y = self.y() + self.height() - self._pixmap.height() - 4
+        return QRect(x, y, self._pixmap.width(), self._pixmap.height())
+
     def foot_anchor_global(self) -> QPoint:
-        """Return the global foot/baseline anchor used to start a full-size task."""
+        """Return the painted sprite's global bottom-centre baseline anchor."""
+        rect = self.visual_rect_global()
         return QPoint(
-            self.x() + self.width() // 2,
-            self.y() + self.height() - 4,
+            rect.x() + rect.width() // 2,
+            rect.y() + rect.height(),
         )
 
     def snap_to_default(self) -> None:
