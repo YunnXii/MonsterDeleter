@@ -43,10 +43,10 @@ class ChibiAvatar(QWidget):
     # differences. Keep the authoring-time result as four constants instead of
     # doing any image analysis at runtime. These offsets apply to cruise only.
     WALK_RENDER_OFFSETS = {
-        2: QPoint(0, 0),   # source frame 3
-        5: QPoint(0, 0),   # source frame 6
-        3: QPoint(-1, 0),  # source frame 4
-        1: QPoint(1, -1),  # source frame 2
+        2: QPoint(-2, 0),  # source frame 3
+        5: QPoint(-1, 0),  # source frame 6
+        3: QPoint(1, 0),   # source frame 4
+        1: QPoint(2, -1),  # source frame 2
     }
 
     # Walk frame 9 faces the user. When the user confirms, briefly reverse the
