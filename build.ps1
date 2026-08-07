@@ -16,6 +16,9 @@ python -m PyInstaller `
   --add-data "characters;characters" `
   --add-data "build\app.ico;assets" `
   --hidden-import send2trash `
+  --hidden-import win32com.client `
+  --hidden-import pythoncom `
+  --hidden-import pywintypes `
   --collect-all uiautomation `
   main.py
 
