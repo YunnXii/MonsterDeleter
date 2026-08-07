@@ -4,16 +4,17 @@ import argparse
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app.character import CharacterConfig
 from app.context_menu import ensure_context_menu, register_context_menu, unregister_context_menu
 from app.kick_calibrator import KickCalibrationOverlay
-from app.launcher import LaunchAction, show_launch_prompt
+from app.resident_controller import ResidentController
 from app.responsive_overlay import ResponsiveDesktopCleanerOverlay
 from app.resources import resource_path
+from app.single_instance import LocalCommandServer, make_command, send_command
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -49,6 +50,14 @@ def show_status(title: str, message: str, ok: bool) -> int:
     return 0 if ok else 1
 
 
+def _run_standalone_demo(app: QApplication, config: CharacterConfig) -> int:
+    overlay = ResponsiveDesktopCleanerOverlay(None, config, demo=True)
+    overlay.show()
+    overlay.activateWindow()
+    overlay.setFocus()
+    return app.exec()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(list(argv if argv is not None else sys.argv[1:]))
 
@@ -60,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     _set_app_icon(app)
     config = load_character()
 
+    # Development/admin entry points deliberately stay standalone so a resident
+    # pet cannot interfere with visual calibration or explicit menu maintenance.
     if args.calibrate_kick:
         calibrator = KickCalibrationOverlay(config)
         calibrator.show()
@@ -75,27 +86,42 @@ def main(argv: list[str] | None = None) -> int:
         result = register_context_menu(config.menu_text)
         return show_status("叫家琦来", result.message, result.ok)
 
-    # Normal double-click: first run installs the menu; later runs verify and
-    # repair stale EXE paths automatically. Do not surprise the user by starting
-    # the full-screen animation unless they explicitly choose the demo button.
-    if not args.target and not args.demo:
-        menu_result = ensure_context_menu(config.menu_text)
-        if not menu_result.ok:
-            return show_status("叫家琦来", menu_result.message, False)
-
-        action = show_launch_prompt(menu_result)
-        if action is LaunchAction.UNINSTALL_MENU:
-            result = unregister_context_menu()
-            return show_status("叫家琦来", result.message, result.ok)
-        if action is not LaunchAction.DEMO:
-            return 0
+    if args.demo:
+        return _run_standalone_demo(app, config)
 
     target = Path(args.target).expanduser().resolve() if args.target else None
-    demo = args.demo or target is None
-    overlay = ResponsiveDesktopCleanerOverlay(target, config, demo=demo)
-    overlay.show()
-    overlay.activateWindow()
-    overlay.setFocus()
+    initial_command = make_command(target)
+
+    # A context-menu invocation launches the same EXE. If the resident process
+    # already exists, send it the target and disappear immediately; never spawn
+    # a second pet or a second long-lived QApplication.
+    if send_command(initial_command):
+        return 0
+
+    app.setQuitOnLastWindowClosed(False)
+
+    command_server = LocalCommandServer(app)
+    try:
+        command_server.start()
+    except RuntimeError as exc:
+        return show_status("叫家琦来", str(exc), False)
+
+    menu_result = ensure_context_menu(config.menu_text)
+    controller = ResidentController(app, config, command_server)
+
+    if not menu_result.ok:
+        QTimer.singleShot(0, lambda: controller.notify(menu_result.message))
+    elif menu_result.changed:
+        QTimer.singleShot(
+            0,
+            lambda: controller.notify("部署完成。以后看哪个文件不顺眼，右键叫我。"),
+        )
+
+    if target is not None:
+        QTimer.singleShot(0, lambda: controller.start_task(target))
+
+    # Keep a Python reference for the lifetime of the Qt event loop.
+    app._resident_controller = controller  # type: ignore[attr-defined]
     return app.exec()
 
 
