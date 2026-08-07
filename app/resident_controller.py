@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, QSettings, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QSettings, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .autostart import is_autostart_enabled, set_autostart
 from .character import CharacterConfig
+from .direct_overlay import DirectTargetCleanerOverlay
 from .interactions import InteractionProvider, RandomQuipProvider
 from .pet_widget import PetWidget
-from .responsive_overlay import ResponsiveDesktopCleanerOverlay
 from .single_instance import LocalCommandServer
+from .target_resolver import (
+    ResolveResult,
+    TargetResolveTask,
+    physical_to_qt_global,
+)
 
 
 SETTINGS_ORG = "YunnXii"
@@ -20,8 +25,8 @@ PET_X_KEY = "pet/x"
 PET_Y_KEY = "pet/y"
 
 
-class ResidentTaskOverlay(ResponsiveDesktopCleanerOverlay):
-    """A cleaner session that returns control to the resident app when done."""
+class ResidentTaskOverlay(DirectTargetCleanerOverlay):
+    """A direct cleaner session that returns control to the resident app."""
 
     session_finished = pyqtSignal()
 
@@ -34,8 +39,6 @@ class ResidentTaskOverlay(ResponsiveDesktopCleanerOverlay):
             return
         self._resident_exit_emitted = True
 
-        # Invalidate any late Shell worker result before tearing down the visual
-        # session. The resident process itself stays alive.
         self._invalidate_async_attempt()
         self._stop_motion_animations()
         self._stop_flying_icon()
@@ -45,7 +48,7 @@ class ResidentTaskOverlay(ResponsiveDesktopCleanerOverlay):
 
 
 class ResidentController:
-    """Own the long-lived desktop pet, tray, IPC, and one cleaner session."""
+    """Own the long-lived desktop pet, tray, IPC, target resolver, and sessions."""
 
     def __init__(
         self,
@@ -62,6 +65,11 @@ class ResidentController:
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.active_overlay: ResidentTaskOverlay | None = None
         self._quitting = False
+
+        self._resolving = False
+        self._resolve_attempt_id = 0
+        self._resolve_task: TargetResolveTask | None = None
+        self._resolve_target_path: Path | None = None
 
         self.pet = PetWidget()
         self.pet.interaction_requested.connect(self._on_pet_interaction)
@@ -98,8 +106,6 @@ class ResidentController:
         self.tray.setToolTip("叫家琦来")
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_tray_activated)
-        # Qt keeps a visible tray icon registered and will add it automatically
-        # if the system tray becomes available after an early login startup.
         self.tray.show()
 
         self.command_server.command_received.connect(self.handle_command)
@@ -107,7 +113,7 @@ class ResidentController:
 
     @property
     def busy(self) -> bool:
-        return self.active_overlay is not None
+        return self._resolving or self.active_overlay is not None
 
     @staticmethod
     def _tray_available() -> bool:
@@ -133,16 +139,65 @@ class ResidentController:
             return
 
         target = Path(raw_path).expanduser().resolve()
-        self.start_task(target)
+        self.resolve_and_start(target)
 
-    def start_task(self, target: Path | None, *, demo: bool = False) -> None:
+    def resolve_and_start(self, target: Path) -> None:
+        """Resolve a visible Explorer/Desktop item before starting any overlay."""
         if self.busy:
             self.notify("手上正踹着一个呢，等等。")
             return
 
+        self._resolving = True
+        self._resolve_attempt_id += 1
+        attempt_id = self._resolve_attempt_id
+        self._resolve_target_path = target
+
+        self.show_pet()
+        self.pet.show_message("我看看它站哪儿。")
+
+        task = TargetResolveTask(attempt_id, target)
+        task.signals.finished.connect(self._on_target_resolved)
+        self._resolve_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_target_resolved(self, attempt_id: int, result: ResolveResult) -> None:
+        if attempt_id != self._resolve_attempt_id:
+            return
+
+        target = self._resolve_target_path
+        self._resolving = False
+        self._resolve_task = None
+        self._resolve_target_path = None
+
+        if self._quitting:
+            self._shutdown()
+            return
+
+        if target is None:
+            return
+
+        if not result.ok or result.target is None:
+            self.pet.show_message(result.message or "这文件会隐身，我没找着它。")
+            return
+
+        target_global = physical_to_qt_global(result.target.center)
+        self.start_task(target, target_global=target_global)
+
+    def start_task(self, target: Path, *, target_global: QPoint) -> None:
+        if self.busy:
+            self.notify("手上正踹着一个呢，等等。")
+            return
+
+        entry_global = self.pet.foot_anchor_global()
         self.pet.bubble.hide()
         self.pet.hide()
-        overlay = ResidentTaskOverlay(target, self.config, demo=demo)
+
+        overlay = ResidentTaskOverlay(
+            target,
+            self.config,
+            target_global_pos=target_global,
+            entry_global_pos=entry_global,
+        )
         self.active_overlay = overlay
         overlay.session_finished.connect(self._on_task_finished)
         overlay.show()
@@ -150,7 +205,7 @@ class ResidentController:
         overlay.setFocus()
 
     def show_pet(self) -> None:
-        if self.busy:
+        if self.active_overlay is not None:
             return
         self.pet.show()
         self.pet.raise_()
@@ -163,7 +218,7 @@ class ResidentController:
                 QSystemTrayIcon.MessageIcon.Information,
                 2400,
             )
-        elif not self.busy:
+        elif self.active_overlay is None:
             self.pet.show_message(message)
 
     def _on_pet_interaction(self, click_streak: int) -> None:
@@ -184,8 +239,7 @@ class ResidentController:
         self.return_action.setEnabled(not self.busy)
 
     def _request_aim_mode(self) -> None:
-        # Deliberately do not fall back to the old coordinate-only crosshair.
-        # The next implementation slice will attach real UIA/Shell hit-testing.
+        # Still deliberately disabled until the next slice has real hit-testing.
         self.pet.show_message("真准星正在接线。先用文件右键叫我。")
 
     def _return_pet_home(self) -> None:
@@ -254,6 +308,13 @@ class ResidentController:
         if self._quitting:
             return
         self._quitting = True
+
+        if self._resolving:
+            self._resolve_attempt_id += 1
+            self._resolving = False
+            self._resolve_task = None
+            self._resolve_target_path = None
+
         if self.active_overlay is not None:
             self.active_overlay._exit()
             return
