@@ -11,8 +11,14 @@ from app.explosion import ExplosionWidget
 from app.overlay import DesktopCleanerOverlay
 
 
+_APP: QApplication | None = None
+
+
 def _app() -> QApplication:
-    return QApplication.instance() or QApplication([])
+    global _APP
+    if _APP is None:
+        _APP = QApplication.instance() or QApplication([])
+    return _APP
 
 
 def _config() -> CharacterConfig:
@@ -21,25 +27,31 @@ def _config() -> CharacterConfig:
 
 
 def test_avatar_can_render_offscreen() -> None:
-    _app()
+    app = _app()
     avatar = ChibiAvatar(_config())
     avatar.show()
+    app.processEvents()
     pixmap = avatar.grab()
     assert not pixmap.isNull()
     avatar.close()
+    app.processEvents()
 
 
 def test_overlay_can_construct_in_demo_mode() -> None:
-    _app()
+    app = _app()
     overlay = DesktopCleanerOverlay(None, _config(), demo=True)
+    app.processEvents()
     assert overlay.demo is True
     overlay.close()
+    app.processEvents()
 
 
 def test_explosion_can_render_offscreen() -> None:
-    _app()
+    app = _app()
     explosion = ExplosionWidget()
     explosion.show()
+    app.processEvents()
     pixmap = explosion.grab()
     assert not pixmap.isNull()
     explosion.close()
+    app.processEvents()
