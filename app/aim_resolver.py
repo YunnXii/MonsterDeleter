@@ -9,20 +9,17 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal, pyqtSlot
 
+from .native_desktop import NativeDesktopHit, NativeDesktopProbe, probe_native_desktop
 from .target_resolver import (
     PhysicalTarget,
     _known_desktop_roots,
     _physical_target,
-    _safe_children,
     _safe_int,
     _safe_text,
 )
 
 
 MAX_PARENT_HOPS = 14
-MAX_DESKTOP_HIT_CONTROLS = 3000
-DESKTOP_HIT_MARGIN_X = 7
-DESKTOP_HIT_MARGIN_Y = 5
 HOVER_HOLD_SECONDS = 0.32
 HOVER_HOLD_MARGIN_X = 12
 HOVER_HOLD_MARGIN_Y = 9
@@ -66,7 +63,7 @@ class AimSelectionResult:
 
 @dataclass(frozen=True)
 class _HitItem:
-    control: object
+    control: object | None
     target: PhysicalTarget
     name: str
     root_class: str
@@ -133,7 +130,7 @@ def point_hits_physical_target(
     margin_x: int = 0,
     margin_y: int = 0,
 ) -> bool:
-    """Return whether a physical cursor point lies in an optionally padded UIA rect."""
+    """Return whether a physical cursor point lies in an optionally padded rect."""
     x, y = int(point[0]), int(point[1])
     return (
         target.left - max(0, margin_x) <= x <= target.right + max(0, margin_x)
@@ -166,105 +163,28 @@ def _root_is_desktop(root) -> bool:
     }
 
 
-def _choose_geometric_hit(
-    items: list[_HitItem],
-    point: tuple[int, int],
-) -> _HitItem | None:
-    """Choose the closest desktop item whose padded UIA rect covers the point."""
-    hits = [
-        item
-        for item in items
-        if point_hits_physical_target(
-            point,
-            item.target,
-            margin_x=DESKTOP_HIT_MARGIN_X,
-            margin_y=DESKTOP_HIT_MARGIN_Y,
-        )
-    ]
-    if not hits:
-        return None
-
-    x, y = int(point[0]), int(point[1])
-
-    def score(item: _HitItem) -> tuple[float, int]:
-        center_x, center_y = item.target.center
-        distance_sq = float((center_x - x) ** 2 + (center_y - y) ** 2)
-        area = max(1, item.target.right - item.target.left) * max(
-            1, item.target.bottom - item.target.top
-        )
-        return distance_sq, area
-
-    return min(hits, key=score)
+def _hit_item_from_native(hit: NativeDesktopHit) -> _HitItem:
+    target = PhysicalTarget(
+        left=int(hit.left),
+        top=int(hit.top),
+        right=int(hit.right),
+        bottom=int(hit.bottom),
+        accessible_name=hit.name,
+        selected=False,
+        root_class="SysListView32",
+    )
+    return _HitItem(
+        control=None,
+        target=target,
+        name=hit.name,
+        root_class="SysListView32",
+        root_handle=int(hit.listview_hwnd),
+        desktop_root=True,
+    )
 
 
-def _desktop_geometric_hit(
-    auto,
-    root,
-    point: tuple[int, int],
-    *,
-    root_class: str,
-    root_handle: int,
-) -> _HitItem | None:
-    """Fallback for flaky Desktop ControlFromPoint providers.
-
-    Windows' desktop sometimes returns FolderView / SysListView32 rather than the
-    ListItem under the cursor after focus changes. The shell itself still knows
-    the item geometry, so enumerate visible desktop ListItems and perform the
-    final hit-test locally instead of declaring the point empty.
-    """
-    items: list[_HitItem] = []
-    visited = 0
-    try:
-        iterator = auto.WalkTree(
-            root,
-            getChildren=_safe_children,
-            includeTop=True,
-            maxDepth=MAX_PARENT_HOPS,
-        )
-        for entry in iterator:
-            control = entry[0]
-            visited += 1
-            if visited > MAX_DESKTOP_HIT_CONTROLS:
-                break
-
-            try:
-                if int(control.ControlType) != int(auto.ControlType.ListItemControl):
-                    continue
-            except Exception:
-                continue
-
-            name = _safe_text(control, "Name").strip()
-            if not name:
-                continue
-            physical = _physical_target(control, root_class=root_class, selected=False)
-            if physical is None:
-                continue
-
-            if not point_hits_physical_target(
-                point,
-                physical,
-                margin_x=DESKTOP_HIT_MARGIN_X,
-                margin_y=DESKTOP_HIT_MARGIN_Y,
-            ):
-                continue
-
-            items.append(
-                _HitItem(
-                    control=control,
-                    target=physical,
-                    name=name,
-                    root_class=root_class,
-                    root_handle=root_handle,
-                    desktop_root=True,
-                )
-            )
-    except Exception:
-        return None
-
-    return _choose_geometric_hit(items, point)
-
-
-def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
+def _find_uia_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
+    """UIA path used for Explorer and as a compatibility desktop fallback."""
     try:
         control = auto.ControlFromPoint(int(point[0]), int(point[1]))
     except Exception:
@@ -289,24 +209,10 @@ def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
             root = current
         current = _parent(current)
 
-    if root is None:
+    if list_item is None or root is None:
         return None
 
     root_class = _safe_text(root, "ClassName")
-    root_handle = _safe_int(root, "NativeWindowHandle")
-    desktop_root = _root_is_desktop(root)
-
-    if list_item is None:
-        if desktop_root:
-            return _desktop_geometric_hit(
-                auto,
-                root,
-                point,
-                root_class=root_class,
-                root_handle=root_handle,
-            )
-        return None
-
     physical = _physical_target(list_item, root_class=root_class, selected=False)
     if physical is None:
         return None
@@ -320,8 +226,24 @@ def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
         target=physical,
         name=name,
         root_class=root_class,
-        root_handle=root_handle,
-        desktop_root=desktop_root,
+        root_handle=_safe_int(root, "NativeWindowHandle"),
+        desktop_root=_root_is_desktop(root),
+    )
+
+
+def _native_desktop_result(point: tuple[int, int]) -> tuple[_HitItem | None, NativeDesktopProbe]:
+    probe = probe_native_desktop(point)
+    if probe.hit is not None:
+        return _hit_item_from_native(probe.hit), probe
+    return None, probe
+
+
+def _native_desktop_is_definitive_empty(probe: NativeDesktopProbe) -> bool:
+    return (
+        probe.available
+        and probe.visible
+        and probe.hit is None
+        and probe.diagnostic == "desktop-empty"
     )
 
 
@@ -329,14 +251,29 @@ def _probe_shell_item_once(point: tuple[int, int]) -> AimProbeResult:
     if os.name != "nt":
         return AimProbeResult(AimStatus.UNSUPPORTED, message="真准星目前只支持 Windows。")
 
+    # Desktop is deliberately native-first. Its UIA provider can expose only the
+    # FolderView after an application is minimized even though the native view
+    # still highlights icons correctly.
+    native_hit, native_probe = _native_desktop_result(point)
+    if native_hit is not None:
+        return AimProbeResult(
+            AimStatus.FOUND,
+            name=native_hit.name,
+            target=native_hit.target,
+        )
+    if _native_desktop_is_definitive_empty(native_probe):
+        return AimProbeResult(AimStatus.EMPTY, message="这儿没东西，瞄准点。")
+
     auto = _load_auto()
     if auto is None:
+        if native_probe.available and native_probe.visible:
+            return AimProbeResult(AimStatus.ERROR, message="桌面这一下没看清，再晃一下准星。")
         return AimProbeResult(AimStatus.ERROR, message="我的眼镜没加载好。")
 
     try:
         auto.SetGlobalSearchTimeout(0.25)
         with auto.UIAutomationInitializerInThread():
-            hit = _find_hit_item(auto, point)
+            hit = _find_uia_hit_item(auto, point)
             if hit is None:
                 return AimProbeResult(AimStatus.EMPTY, message="这儿没东西，瞄准点。")
             return AimProbeResult(AimStatus.FOUND, name=hit.name, target=hit.target)
@@ -347,10 +284,8 @@ def _probe_shell_item_once(point: tuple[int, int]) -> AimProbeResult:
 def probe_shell_item_at(point: tuple[int, int]) -> AimProbeResult:
     """Hover probe with a short visual-only hysteresis window.
 
-    A single flaky Desktop UIA sample should not make a valid label flash red.
-    Reuse the most recent reliable hover for a few hundred milliseconds only
-    while the cursor still lies over that same item's physical rectangle. Click
-    selection does NOT use this cache; resolve_shell_item_at always probes again.
+    A single flaky sample should not make a valid label flash red. The cache is
+    never used for final click selection; resolve_shell_item_at probes again.
     """
     global _LAST_PROBE_RESULT, _LAST_PROBE_AT
 
@@ -440,9 +375,8 @@ def _resolve_desktop_name(accessible_name: str) -> tuple[Path | None, bool]:
 def _explorer_folder_paths(hwnd: int) -> list[Path]:
     """Return all filesystem folders exposed for one Explorer HWND.
 
-    Windows 11 tabs may share a top-level HWND. Enumerating every matching Shell
-    window and resolving the clicked display name across them is safer than
-    trusting whichever tab Shell.Application happens to return first.
+    Windows 11 tabs may share a top-level HWND. Resolve the clicked display name
+    across all matching Shell windows and accept it only when unique.
     """
     if os.name != "nt" or hwnd <= 0:
         return []
@@ -502,19 +436,46 @@ def _resolve_explorer_name(hwnd: int, accessible_name: str) -> tuple[Path | None
     return None, len(matches) > 1, True
 
 
+def _selection_from_desktop_hit(hit: _HitItem) -> AimSelectionResult:
+    path, ambiguous = _resolve_desktop_name(hit.name)
+    if ambiguous:
+        return AimSelectionResult(
+            AimStatus.AMBIGUOUS,
+            target=hit.target,
+            message="桌面上同名的家伙有点多，我没认准。",
+        )
+    if path is None:
+        return AimSelectionResult(
+            AimStatus.EMPTY,
+            target=hit.target,
+            message="我看见图标了，但没找到它真正住哪儿。",
+        )
+    return AimSelectionResult(AimStatus.FOUND, path=path, target=hit.target)
+
+
 def resolve_shell_item_at(point: tuple[int, int]) -> AimSelectionResult:
-    """Resolve one screen point to a real filesystem Path + UIA rectangle."""
+    """Resolve one screen point to a real filesystem Path + visible item rect."""
     if os.name != "nt":
         return AimSelectionResult(AimStatus.UNSUPPORTED, message="真准星目前只支持 Windows。")
 
+    # Final selection repeats the native desktop hit from the click coordinate.
+    # Hover cache is intentionally irrelevant here.
+    native_hit, native_probe = _native_desktop_result(point)
+    if native_hit is not None:
+        return _selection_from_desktop_hit(native_hit)
+    if _native_desktop_is_definitive_empty(native_probe):
+        return AimSelectionResult(AimStatus.EMPTY, message="这儿没东西，瞄准点。")
+
     auto = _load_auto()
     if auto is None:
+        if native_probe.available and native_probe.visible:
+            return AimSelectionResult(AimStatus.ERROR, message="桌面这一下没看清，再瞄一次。")
         return AimSelectionResult(AimStatus.ERROR, message="我的眼镜没加载好，暂时瞄不了。")
 
     try:
         auto.SetGlobalSearchTimeout(0.45)
         with auto.UIAutomationInitializerInThread():
-            hit = _find_hit_item(auto, point)
+            hit = _find_uia_hit_item(auto, point)
     except Exception as exc:
         return AimSelectionResult(AimStatus.ERROR, message=f"刚才那一下没看清：{exc}")
 
@@ -522,20 +483,7 @@ def resolve_shell_item_at(point: tuple[int, int]) -> AimSelectionResult:
         return AimSelectionResult(AimStatus.EMPTY, message="这儿没东西，瞄准点。")
 
     if hit.desktop_root:
-        path, ambiguous = _resolve_desktop_name(hit.name)
-        if ambiguous:
-            return AimSelectionResult(
-                AimStatus.AMBIGUOUS,
-                target=hit.target,
-                message="桌面上同名的家伙有点多，我没认准。",
-            )
-        if path is None:
-            return AimSelectionResult(
-                AimStatus.EMPTY,
-                target=hit.target,
-                message="我看见图标了，但没找到它真正住哪儿。",
-            )
-        return AimSelectionResult(AimStatus.FOUND, path=path, target=hit.target)
+        return _selection_from_desktop_hit(hit)
 
     path, ambiguous, shell_supported = _resolve_explorer_name(hit.root_handle, hit.name)
     if not shell_supported:
