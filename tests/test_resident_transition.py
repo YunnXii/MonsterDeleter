@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QEasingCurve, QPoint
 from PyQt6.QtWidgets import QApplication
 
 from app.pet_widget import PetWidget
@@ -37,7 +37,12 @@ def test_resident_morph_widget_can_render_offscreen() -> None:
         foot = QPoint(400, 500)
         start = rect_from_foot(foot, 114, 145)
         end = rect_from_foot(foot, 280, 298)
-        morph.start(start, end, duration_ms=10, easing=morph._animation.easingCurve().type())
+        morph.start(
+            start,
+            end,
+            duration_ms=10,
+            easing=QEasingCurve.Type.OutCubic,
+        )
         _APP.processEvents()
         assert not morph.grab().isNull()
     finally:
