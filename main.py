@@ -45,8 +45,6 @@ def _set_app_icon(app: QApplication) -> None:
             app.setWindowIcon(QIcon(str(candidate)))
             return
 
-    # Source-mode fallback: a developer may not have run build_app_icon.py yet.
-    # Reuse the same front-facing walk frame so the tray never becomes blank.
     walk_path = resource_path("characters", "jiaqi", "sprites", "walk.png")
     sheet = QImage(str(walk_path))
     if not sheet.isNull() and sheet.width() % 9 == 0:
@@ -83,8 +81,6 @@ def main(argv: list[str] | None = None) -> int:
     _set_app_icon(app)
     config = load_character()
 
-    # Development/admin entry points deliberately stay standalone so a resident
-    # pet cannot interfere with visual calibration or explicit menu maintenance.
     if args.calibrate_kick:
         calibrator = KickCalibrationOverlay(config)
         calibrator.show()
@@ -106,9 +102,6 @@ def main(argv: list[str] | None = None) -> int:
     target = Path(args.target).expanduser().resolve() if args.target else None
     initial_command = make_command(target)
 
-    # A context-menu invocation launches the same EXE. If the resident process
-    # already exists, send it the target and disappear immediately; never spawn
-    # a second pet or a second long-lived QApplication.
     if send_command(initial_command):
         return 0
 
@@ -118,8 +111,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         command_server.start()
     except ResidentAlreadyRunning:
-        # Two instances can be launched inside the same few hundred ms. The
-        # process that lost the server-name race simply retries delivery once.
         if send_command(initial_command, timeout_ms=1000):
             return 0
         return show_status("叫家琦来", "已有常驻实例，但这次没联系上它。", False)
@@ -138,9 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if target is not None:
-        QTimer.singleShot(0, lambda: controller.start_task(target))
+        QTimer.singleShot(0, lambda: controller.resolve_and_start(target))
 
-    # Keep a Python reference for the lifetime of the Qt event loop.
     app._resident_controller = controller  # type: ignore[attr-defined]
     return app.exec()
 
