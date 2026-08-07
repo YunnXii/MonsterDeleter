@@ -1,4 +1,3 @@
-import base64
 from pathlib import Path
 
 from PyQt6.QtGui import QImage
@@ -8,21 +7,7 @@ from app.character import CharacterConfig
 
 ROOT = Path(__file__).parents[1]
 CONFIG_PATH = ROOT / "characters" / "jiaqi" / "character.json"
-
-
-def _load_sprite(filename: str) -> QImage:
-    path = ROOT / "characters" / "jiaqi" / "sprites" / filename
-    image = QImage(str(path))
-    if not image.isNull():
-        return image
-
-    part_paths = sorted(path.parent.glob(f"{filename}.b64.*"))
-    assert part_paths, f"missing sprite asset: {filename}"
-    payload = base64.b64decode(
-        "".join(p.read_text(encoding="ascii").strip() for p in part_paths)
-    )
-    assert image.loadFromData(payload, "PNG")
-    return image
+SPRITE_DIR = ROOT / "characters" / "jiaqi" / "sprites"
 
 
 def test_sprite_assets_are_valid_strips() -> None:
@@ -34,7 +19,9 @@ def test_sprite_assets_are_valid_strips() -> None:
     }
 
     for filename, frame_count in expected.items():
-        image = _load_sprite(filename)
+        path = SPRITE_DIR / filename
+        assert path.exists(), f"missing sprite asset: {filename}"
+        image = QImage(str(path))
         assert not image.isNull(), filename
         assert image.width() % frame_count == 0
         assert image.width() // frame_count > 0
