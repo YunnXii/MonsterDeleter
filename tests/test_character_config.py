@@ -12,6 +12,7 @@ def test_character_config_loads() -> None:
     assert config.menu_text
     assert config.confirm_text == "嘤嘤嘤，就是这个！"
     assert config.retry_text == "不是不是"
+    assert config.success_text == "这倒霉文件已经踹飞了。"
     assert config.impact_x == 234
     assert config.impact_y == 136
     assert config.waiting_offset == 40
