@@ -16,6 +16,7 @@ python -m PyInstaller `
   --add-data "characters;characters" `
   --add-data "build\app.ico;assets" `
   --hidden-import send2trash `
+  --collect-all uiautomation `
   main.py
 
 Write-Host "Build complete: dist\$appName.exe"
