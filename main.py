@@ -5,17 +5,19 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app.character import CharacterConfig
-from app.context_menu import register_context_menu, unregister_context_menu
+from app.context_menu import ensure_context_menu, register_context_menu, unregister_context_menu
 from app.kick_calibrator import KickCalibrationOverlay
+from app.launcher import LaunchAction, show_launch_prompt
 from app.overlay import DesktopCleanerOverlay
 from app.resources import resource_path
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="叫家琦来收拾桌面文件")
+    parser = argparse.ArgumentParser(description="叫家琦来收拾文件")
     parser.add_argument("target", nargs="?", help="要移入回收站的文件或文件夹")
     parser.add_argument("--demo", action="store_true", help="只播放动画，不删除任何内容")
     parser.add_argument("--calibrate-kick", action="store_true", help="可视化校准踢击命中锚点")
@@ -26,6 +28,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def load_character() -> CharacterConfig:
     return CharacterConfig.load(resource_path("characters", "jiaqi", "character.json"))
+
+
+def _set_app_icon(app: QApplication) -> None:
+    for candidate in (
+        resource_path("assets", "app.ico"),
+        resource_path("build", "app.ico"),
+    ):
+        if candidate.exists():
+            app.setWindowIcon(QIcon(str(candidate)))
+            return
 
 
 def show_status(title: str, message: str, ok: bool) -> int:
@@ -45,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     app = QApplication(sys.argv)
     app.setApplicationName("叫家琦来")
+    _set_app_icon(app)
     config = load_character()
 
     if args.calibrate_kick:
@@ -58,13 +71,24 @@ def main(argv: list[str] | None = None) -> int:
         result = unregister_context_menu()
         return show_status("叫家琦来", result.message, result.ok)
 
-    # A normal double-click installs the menu and then opens the safe demo.
-    if args.install_menu or (not args.target and not args.demo):
+    if args.install_menu:
         result = register_context_menu(config.menu_text)
-        if args.install_menu:
+        return show_status("叫家琦来", result.message, result.ok)
+
+    # Normal double-click: first run installs the menu; later runs verify and
+    # repair stale EXE paths automatically. Do not surprise the user by starting
+    # the full-screen animation unless they explicitly choose the demo button.
+    if not args.target and not args.demo:
+        menu_result = ensure_context_menu(config.menu_text)
+        if not menu_result.ok:
+            return show_status("叫家琦来", menu_result.message, False)
+
+        action = show_launch_prompt(menu_result)
+        if action is LaunchAction.UNINSTALL_MENU:
+            result = unregister_context_menu()
             return show_status("叫家琦来", result.message, result.ok)
-        if not result.ok:
-            show_status("叫家琦来", result.message, False)
+        if action is not LaunchAction.DEMO:
+            return 0
 
     target = Path(args.target).expanduser().resolve() if args.target else None
     demo = args.demo or target is None
