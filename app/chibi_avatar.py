@@ -55,6 +55,11 @@ class ChibiAvatar(QWidget):
     TURN_TO_TARGET = (8, 7, 6)
     TURN_TO_TARGET_DURATIONS = (90, 80, 80)
 
+    # A failed kick should not freeze on the last side-facing kick frame. Reuse
+    # the already-authored walk tail to settle back toward the user smoothly.
+    FAILURE_RECOVER = (6, 7, 8)
+    FAILURE_RECOVER_DURATIONS = (70, 85, 120)
+
     KICK_DURATIONS = (130, 100, 95, 75, 90, 85, 110, 160)
     VICTORY_DURATIONS = (180, 180, 200, 220, 420, 300)
 
@@ -162,6 +167,27 @@ class ChibiAvatar(QWidget):
         self._walk_phase = "waiting"
         self._sprite_frame = self.WAIT_FRONT_FRAME
         self._bob_offset = 0
+        self._idle_bob_timer.start()
+        self.update()
+
+    def play_failure_wait(self) -> None:
+        """Recover from a failed kick into the same front-facing wait pose."""
+        self.stop()
+        self._action = AvatarAction.WAITING
+        self._walk_phase = "failure_recover"
+        self._bob_offset = 0
+        self._play_sequence(
+            self.FAILURE_RECOVER,
+            self.FAILURE_RECOVER_DURATIONS,
+            loop=False,
+            on_end=self._finish_failure_wait,
+        )
+
+    def _finish_failure_wait(self) -> None:
+        if self._action is not AvatarAction.WAITING:
+            return
+        self._walk_phase = "waiting"
+        self._sprite_frame = self.WAIT_FRONT_FRAME
         self._idle_bob_timer.start()
         self.update()
 
