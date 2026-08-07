@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 
 from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer
@@ -16,7 +18,7 @@ from PyQt6.QtWidgets import (
 
 from .character import CharacterConfig
 from .chibi_avatar import AvatarAction, ChibiAvatar
-from .delete_service import DeleteResult, move_to_recycle_bin
+from .delete_service import DeleteFailureKind, DeleteResult, move_to_recycle_bin
 from .explosion import ExplosionWidget
 from .flying_icon import FlyingIcon, system_icon_pixmap
 
@@ -29,6 +31,45 @@ WALK_FIRST_SAFE_STOP_MS = (
     + ChibiAvatar.WALK_CRUISE_DURATIONS[0]
 )
 WALK_CRUISE_CYCLE_MS = sum(ChibiAvatar.WALK_CRUISE_DURATIONS)
+
+
+class DialogMode(Enum):
+    CONFIRM = auto()
+    FAILURE = auto()
+    RESULT = auto()
+
+
+@dataclass(frozen=True)
+class FailureCopy:
+    message: str
+    retry_label: str | None
+    cancel_label: str = "不踹了"
+
+
+def failure_copy(result: DeleteResult) -> FailureCopy:
+    if result.kind is DeleteFailureKind.IN_USE:
+        return FailureCopy(
+            "这玩意正开着呢，踹不动。",
+            "关了再踹一次",
+        )
+    if result.kind is DeleteFailureKind.PERMISSION:
+        return FailureCopy(
+            "这玩意权限挺大，我踹不动。\nWindows 没给删除权限。",
+            "再踹一次",
+        )
+    if result.kind is DeleteFailureKind.NOT_FOUND:
+        return FailureCopy(
+            "……这玩意自己先跑了。\n它已经不在原来的位置。",
+            None,
+        )
+
+    detail = result.technical_detail.strip()
+    if len(detail) > 180:
+        detail = detail[:177] + "..."
+    message = "这玩意有点邪门，踹不动。"
+    if detail:
+        message += f"\n{detail}"
+    return FailureCopy(message, "再踹一次")
 
 
 def phase_aligned_walk_duration_ms(distance_px: int, walk_speed: int) -> int:
@@ -92,7 +133,13 @@ class DesktopCleanerOverlay(QWidget):
         self._waiting_pos: QPoint | None = None
         self._turn_complete = False
         self._approach_complete = False
+        self._dialog_mode = DialogMode.CONFIRM
         self.flying_icon: FlyingIcon | None = None
+
+        primary = QApplication.primaryScreen()
+        if primary is None:
+            raise RuntimeError("没有可用显示器")
+        self._virtual_geometry = primary.virtualGeometry()
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -101,7 +148,7 @@ class DesktopCleanerOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setGeometry(QApplication.primaryScreen().virtualGeometry())
+        self.setGeometry(self._virtual_geometry)
 
         self.avatar = ChibiAvatar(config, self)
         self.avatar.hide()
@@ -142,7 +189,7 @@ class DesktopCleanerOverlay(QWidget):
 
     def _selection_prompt(self) -> str:
         if self.demo:
-            return "点一下桌面，看看家琦怎么收拾它"
+            return "点一下屏幕，看看家琦怎么收拾它"
         name = self.target.name if self.target else "这个文件"
         return self.config.prompt_text.format(target=name)
 
@@ -178,8 +225,8 @@ class DesktopCleanerOverlay(QWidget):
         )
         self.confirm_button.setStyleSheet(button_css)
         self.retry_button.setStyleSheet(button_css)
-        self.confirm_button.clicked.connect(self._confirm)
-        self.retry_button.clicked.connect(self._retry)
+        self.confirm_button.clicked.connect(self._on_primary_dialog_action)
+        self.retry_button.clicked.connect(self._on_secondary_dialog_action)
         buttons.addWidget(self.confirm_button)
         buttons.addWidget(self.retry_button)
 
@@ -220,10 +267,22 @@ class DesktopCleanerOverlay(QWidget):
         for y in range(0, self.height(), 48):
             painter.drawLine(0, y, self.width(), y)
 
+    def _lock_stage_to_clicked_screen(self, local_point: QPoint) -> QPoint:
+        """Shrink the post-click stage to the monitor that contains the target."""
+        global_point = self.mapToGlobal(local_point)
+        screen = QApplication.screenAt(global_point) or QApplication.primaryScreen()
+        if screen is None:
+            return local_point
+
+        geometry = screen.geometry()
+        self.setGeometry(geometry)
+        return global_point - geometry.topLeft()
+
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self._sequence_started or event.button() != Qt.MouseButton.LeftButton:
             return
-        self.target_pos = event.position().toPoint()
+
+        self.target_pos = self._lock_stage_to_clicked_screen(event.position().toPoint())
         self._sequence_started = True
         self.title.hide()
         self.hint.hide()
@@ -325,10 +384,28 @@ class DesktopCleanerOverlay(QWidget):
     def _show_confirmation(self) -> None:
         # Walk frame 9 is front-facing: the interaction target is now the user,
         # not the file, so hold eye contact while waiting for a decision.
+        self._dialog_mode = DialogMode.CONFIRM
         self.avatar.play_waiting_front()
         name = "这个倒霉文件" if self.demo else (self.target.name if self.target else "这个文件")
         self.dialog_text.setText(f"就是「{name}」？")
+        self.confirm_button.setText(self.config.confirm_text)
+        self.retry_button.setText(self.config.retry_text)
         self.confirm_button.show()
+        self.retry_button.show()
+        self._place_dialog()
+
+    def _show_failure(self, result: DeleteResult) -> None:
+        self._dialog_mode = DialogMode.FAILURE
+        copy = failure_copy(result)
+        self.dialog_text.setText(copy.message)
+
+        if copy.retry_label is None:
+            self.confirm_button.hide()
+        else:
+            self.confirm_button.setText(copy.retry_label)
+            self.confirm_button.show()
+
+        self.retry_button.setText(copy.cancel_label)
         self.retry_button.show()
         self._place_dialog()
 
@@ -340,6 +417,18 @@ class DesktopCleanerOverlay(QWidget):
         self.dialog.move(x, y)
         self.dialog.show()
         self.dialog.raise_()
+
+    def _on_primary_dialog_action(self) -> None:
+        if self._dialog_mode is DialogMode.CONFIRM:
+            self._confirm()
+        elif self._dialog_mode is DialogMode.FAILURE:
+            self._retry_delete()
+
+    def _on_secondary_dialog_action(self) -> None:
+        if self._dialog_mode is DialogMode.CONFIRM:
+            self._retry_selection()
+        elif self._dialog_mode is DialogMode.FAILURE:
+            self._exit()
 
     def _confirm(self) -> None:
         if self._attack_pos is None:
@@ -377,6 +466,16 @@ class DesktopCleanerOverlay(QWidget):
                 self.avatar.move(self._attack_pos)
             self.avatar.play_kick()
 
+    def _retry_delete(self) -> None:
+        """Retry from the exact attack position without replaying the walk-in."""
+        if self._attack_pos is None:
+            return
+        self.dialog.hide()
+        self._deleted = False
+        self._delete_result = None
+        self.avatar.move(self._attack_pos)
+        self.avatar.play_kick()
+
     def _stop_motion_animations(self) -> None:
         self.walk_stop_timer.stop()
         for name in (
@@ -395,12 +494,16 @@ class DesktopCleanerOverlay(QWidget):
             self.flying_icon.deleteLater()
             self.flying_icon = None
 
-    def _retry(self) -> None:
+    def _retry_selection(self) -> None:
         self.dialog.hide()
         self._stop_motion_animations()
         self._stop_flying_icon()
         self.avatar.stop()
         self.avatar.hide()
+
+        # Selection may move to another monitor, so restore the virtual desktop
+        # overlay before asking for another click.
+        self.setGeometry(self._virtual_geometry)
         self.target_pos = None
         self._attack_pos = None
         self._waiting_pos = None
@@ -409,6 +512,7 @@ class DesktopCleanerOverlay(QWidget):
         self._sequence_started = False
         self._deleted = False
         self._delete_result = None
+        self._dialog_mode = DialogMode.CONFIRM
         self.title.setText(self._selection_prompt())
         self.title.adjustSize()
         self.hint.adjustSize()
@@ -435,16 +539,16 @@ class DesktopCleanerOverlay(QWidget):
         icon_pixmap = system_icon_pixmap(self.target)
         self._delete_result = move_to_recycle_bin(self.target, demo=self.demo)
 
+        # Failure must not sell a fake success: no explosion and no flying icon.
+        if not self._delete_result.ok:
+            return
+
         self.explosion.move(
             self.target_pos.x() - self.explosion.width() // 2,
             self.target_pos.y() - self.explosion.height() // 2,
         )
         self.explosion.play()
-
-        # Only sell the illusion if the operation actually succeeded. Demo mode
-        # reports success without touching the file, so it remains fully testable.
-        if self._delete_result.ok:
-            self._launch_flying_icon(icon_pixmap)
+        self._launch_flying_icon(icon_pixmap)
 
     def _on_avatar_animation_finished(self) -> None:
         if self.avatar.current_action is AvatarAction.TURN:
@@ -456,9 +560,21 @@ class DesktopCleanerOverlay(QWidget):
             self._slide_out()
 
     def _show_result(self) -> None:
-        result = self._delete_result or DeleteResult(False, "删除动作没有完成")
-        message = self.config.success_text if result.ok else self.config.failure_text
-        self.dialog_text.setText(message.format(detail=result.message))
+        result = self._delete_result or DeleteResult(
+            False,
+            "删除动作没有完成",
+            DeleteFailureKind.OTHER,
+        )
+
+        if not result.ok:
+            # No smug victory after a failed delete. Hold the cold side pose and
+            # let the user close the offending program, then retry in place.
+            self.avatar.play_idle()
+            self._show_failure(result)
+            return
+
+        self._dialog_mode = DialogMode.RESULT
+        self.dialog_text.setText(self.config.success_text)
         self.confirm_button.hide()
         self.retry_button.hide()
         self._place_dialog()
