@@ -9,9 +9,11 @@ from PyQt6.QtWidgets import QApplication
 from app.character import CharacterConfig
 from app.chibi_avatar import AvatarAction, ChibiAvatar
 from app.overlay import (
+    TURN_APPROACH_MS,
     WALK_CRUISE_CYCLE_MS,
     WALK_FIRST_SAFE_STOP_MS,
     phase_aligned_walk_duration_ms,
+    waiting_position_from_attack,
 )
 
 
@@ -48,6 +50,7 @@ def test_animation_director_constants_match_plan() -> None:
     assert ChibiAvatar.WAIT_FRONT_FRAME == 8
     assert ChibiAvatar.TURN_TO_TARGET == (8, 7, 6)
     assert ChibiAvatar.TURN_TO_TARGET_DURATIONS == (90, 80, 80)
+    assert TURN_APPROACH_MS == sum(ChibiAvatar.TURN_TO_TARGET_DURATIONS)
     assert ChibiAvatar.KICK_DURATIONS == (130, 100, 95, 75, 90, 85, 110, 160)
     assert ChibiAvatar.VICTORY_DURATIONS == (180, 180, 200, 220, 420, 300)
 
@@ -65,6 +68,20 @@ def test_phase_alignment_prefers_smaller_effective_speed_change() -> None:
     # changes effective speed less than rushing to the earlier one.
     duration = phase_aligned_walk_duration_ms(408, 390)
     assert duration == 1235
+
+
+def test_waiting_position_stays_away_from_target_on_both_sides() -> None:
+    attack = QPoint(300, 200)
+    assert waiting_position_from_attack(
+        attack,
+        facing_right=True,
+        waiting_offset=40,
+    ) == QPoint(260, 200)
+    assert waiting_position_from_attack(
+        attack,
+        facing_right=False,
+        waiting_offset=40,
+    ) == QPoint(340, 200)
 
 
 def test_cruise_loops_source_frames_3_6_4_2() -> None:
