@@ -66,12 +66,13 @@ class DirectTargetCleanerOverlay(ResponsiveDesktopCleanerOverlay):
             entry_screen = QApplication.screenAt(self._direct_entry_global)
             same_screen = entry_screen is not None and entry_screen.name() == screen.name()
             if same_screen:
+                # Preserve the resident pet's exact foot anchor. A full-size body
+                # may sit slightly outside the screen when the pet was dragged to
+                # an edge; that is less distracting than a post-morph position snap.
                 foot = self._direct_entry_global - geometry.topLeft()
-                self._direct_entry_local = self._clamp_avatar_position(
-                    QPoint(
-                        foot.x() - self.avatar.width() // 2,
-                        foot.y() - self.avatar.height(),
-                    )
+                self._direct_entry_local = QPoint(
+                    foot.x() - self.avatar.width() // 2,
+                    foot.y() - self.avatar.height(),
                 )
             else:
                 # Cross-monitor walking with one side-facing sprite would look
