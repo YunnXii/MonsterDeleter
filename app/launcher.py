@@ -22,7 +22,7 @@ def show_launch_prompt(menu_result: MenuRegistrationResult) -> LaunchAction:
     if menu_result.changed:
         box.setText("部署完成。以后看哪个文件不顺眼，右键叫我。")
     else:
-        box.setText("右键菜单已经就位。")
+        box.setText("我已经在右键菜单里待命了。")
 
     box.setInformativeText(
         f"{menu_result.message}\n\n"
