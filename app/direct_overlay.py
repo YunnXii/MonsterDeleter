@@ -7,6 +7,7 @@ from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer
 from PyQt6.QtWidgets import QApplication
 
 from .character import CharacterConfig
+from .flying_icon import FlyingIcon
 from .overlay import (
     DialogMode,
     STOP_REQUEST_LEAD_MS,
@@ -14,6 +15,12 @@ from .overlay import (
     waiting_position_from_attack,
 )
 from .responsive_overlay import ResponsiveDesktopCleanerOverlay
+
+
+def projectile_direction(target_x: int, avatar_left: int, avatar_width: int) -> int:
+    """Return the physical kick direction from avatar body to impact target."""
+    avatar_center_x = avatar_left + avatar_width // 2
+    return 1 if target_x >= avatar_center_x else -1
 
 
 class DirectTargetCleanerOverlay(ResponsiveDesktopCleanerOverlay):
@@ -140,6 +147,19 @@ class DirectTargetCleanerOverlay(ResponsiveDesktopCleanerOverlay):
         self.avatar.play_walk()
         self.walk_animation.start()
         self.walk_stop_timer.start(max(1, duration - STOP_REQUEST_LEAD_MS))
+
+    def _launch_flying_icon(self, pixmap) -> None:
+        """Launch from the actual kick direction, never from screen-half heuristics."""
+        if self.target_pos is None:
+            return
+        self._stop_flying_icon()
+        self.flying_icon = FlyingIcon(pixmap, self)
+        direction = projectile_direction(
+            self.target_pos.x(),
+            self.avatar.x(),
+            self.avatar.width(),
+        )
+        self.flying_icon.launch(self.target_pos, direction=direction)
 
     def _on_secondary_dialog_action(self) -> None:
         if self._dialog_mode is DialogMode.CONFIRM:
