@@ -69,7 +69,9 @@ def build_icon(walk_path: Path, output_ico: Path, output_png: Path) -> None:
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
 
-    print(f"应用图标已生成：{output_ico}")
+    # Keep stdout ASCII-only because GitHub's Windows runner may still expose
+    # a legacy cp1252 console even though the source file itself is UTF-8.
+    print(f"App icon generated: {output_ico}")
 
 
 def main() -> None:
