@@ -8,10 +8,17 @@ from app.delete_service import (
 
 
 class FakeWindowsError(Exception):
-    def __init__(self, *, winerror: int | None = None, errno: int | None = None) -> None:
-        super().__init__(f"winerror={winerror}, errno={errno}")
+    def __init__(
+        self,
+        *,
+        winerror: int | None = None,
+        errno: int | None = None,
+        hresult: int | None = None,
+    ) -> None:
+        super().__init__(f"winerror={winerror}, errno={errno}, hresult={hresult}")
         self.winerror = winerror
         self.errno = errno
+        self.hresult = hresult
 
 
 def test_demo_delete_succeeds_without_target() -> None:
@@ -29,6 +36,12 @@ def test_missing_target_is_classified() -> None:
 
 def test_windows_sharing_violation_is_in_use() -> None:
     result = _classify_exception(FakeWindowsError(winerror=32))
+    assert result is DeleteFailureKind.IN_USE
+
+
+def test_hresult_sharing_violation_is_in_use() -> None:
+    # HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) == 0x80070020.
+    result = _classify_exception(FakeWindowsError(hresult=0x80070020))
     assert result is DeleteFailureKind.IN_USE
 
 
