@@ -4,11 +4,12 @@ from enum import Enum, auto
 from typing import Callable
 
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtGui import QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .character import CharacterConfig
 from .resources import resource_path
+from .sprite_strip import normalize_sprite_strip
 
 
 class AvatarAction(Enum):
@@ -76,28 +77,25 @@ class ChibiAvatar(QWidget):
         if not path.exists():
             raise RuntimeError(f"找不到角色精灵图：{path}")
 
-        sheet = QPixmap(str(path))
+        sheet = QImage(str(path))
         if sheet.isNull():
             raise RuntimeError(f"无法加载角色精灵图：{path}")
-        if sheet.width() % frame_count != 0:
-            raise RuntimeError(
-                f"精灵图宽度不能被帧数整除：{path} ({sheet.width()}x{sheet.height()})"
-            )
 
-        source_width = sheet.width() // frame_count
-        source_height = sheet.height()
-        frames: list[QPixmap] = []
-        for index in range(frame_count):
-            frame = sheet.copy(index * source_width, 0, source_width, source_height)
-            frames.append(
-                frame.scaled(
-                    self.width(),
-                    self.height(),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+        # The Photoshop-cleaned artwork keeps the original transparency, but
+        # some poses (especially kick) are no longer evenly distributed on x.
+        # Re-detect each pose from transparent gaps and repack it into equal
+        # frame canvases before scaling for display. This step never re-keys or
+        # modifies alpha, so restored white eyes/shoes remain opaque.
+        normalized = normalize_sprite_strip(sheet, frame_count)
+        return [
+            QPixmap.fromImage(frame).scaled(
+                self.width(),
+                self.height(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
-        return frames
+            for frame in normalized
+        ]
 
     def set_facing_right(self, value: bool) -> None:
         self._facing_right = value
