@@ -9,6 +9,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QPoint, QRunnable, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
+from .desktop_paths import desktop_roots
+
 
 MAX_TREE_DEPTH = 12
 MAX_VISITED_CONTROLS = 7000
@@ -91,26 +93,8 @@ def _candidate_names(target: Path) -> tuple[str, ...]:
 
 
 def _known_desktop_roots() -> tuple[Path, ...]:
-    values: list[Path] = []
-    home = Path.home()
-    values.append(home / "Desktop")
-
-    for env_name in ("USERPROFILE", "PUBLIC", "OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
-        raw = os.environ.get(env_name)
-        if not raw:
-            continue
-        base = Path(raw)
-        values.append(base / "Desktop")
-
-    result: list[Path] = []
-    seen: set[str] = set()
-    for path in values:
-        key = os.path.normcase(os.path.abspath(str(path)))
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(path)
-    return tuple(result)
+    """Compatibility shim shared by path-to-screen and aim-to-path resolvers."""
+    return desktop_roots()
 
 
 def _is_desktop_target(target: Path) -> bool:
