@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+import pytest
 
 import app.desktop_paths as desktop_paths
 import app.target_resolver as target_resolver
@@ -26,6 +29,13 @@ def _target(name: str, *, selected: bool = False) -> PhysicalTarget:
 def test_candidate_names_support_hidden_extensions() -> None:
     names = _candidate_names(Path(r"C:\Users\test\Desktop\report.final.docx"))
     assert names == ("report.final.docx", "report.final")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Known Folder API")
+def test_windows_known_folder_api_returns_current_desktop() -> None:
+    desktop = desktop_paths._known_folder_path(desktop_paths.FOLDERID_DESKTOP)
+    assert desktop is not None
+    assert str(desktop).strip()
 
 
 def test_desktop_roots_prefer_windows_known_folder_redirect(monkeypatch) -> None:
