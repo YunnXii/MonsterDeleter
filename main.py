@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app.character import CharacterConfig
@@ -39,6 +39,15 @@ def _set_app_icon(app: QApplication) -> None:
         if candidate.exists():
             app.setWindowIcon(QIcon(str(candidate)))
             return
+
+    # Source-mode fallback: a developer may not have run build_app_icon.py yet.
+    # Reuse the same front-facing walk frame so the tray never becomes blank.
+    walk_path = resource_path("characters", "jiaqi", "sprites", "walk.png")
+    sheet = QImage(str(walk_path))
+    if not sheet.isNull() and sheet.width() % 9 == 0:
+        frame_width = sheet.width() // 9
+        frame = sheet.copy(frame_width * 8, 0, frame_width, sheet.height())
+        app.setWindowIcon(QIcon(QPixmap.fromImage(frame)))
 
 
 def show_status(title: str, message: str, ok: bool) -> int:
