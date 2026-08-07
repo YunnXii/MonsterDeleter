@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, QSettings, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QSettings, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -98,9 +98,9 @@ class ResidentController:
         self.tray.setToolTip("叫家琦来")
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_tray_activated)
-        self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
-        if self.tray_available:
-            self.tray.show()
+        # Qt keeps a visible tray icon registered and will add it automatically
+        # if the system tray becomes available after an early login startup.
+        self.tray.show()
 
         self.command_server.command_received.connect(self.handle_command)
         self.pet.show()
@@ -108,6 +108,10 @@ class ResidentController:
     @property
     def busy(self) -> bool:
         return self.active_overlay is not None
+
+    @staticmethod
+    def _tray_available() -> bool:
+        return QSystemTrayIcon.isSystemTrayAvailable()
 
     def handle_command(self, command: object) -> None:
         if not isinstance(command, dict):
@@ -152,7 +156,7 @@ class ResidentController:
         self.pet.raise_()
 
     def notify(self, message: str) -> None:
-        if self.tray_available:
+        if self._tray_available():
             self.tray.showMessage(
                 "叫家琦来",
                 message,
@@ -200,7 +204,7 @@ class ResidentController:
 
     def _toggle_pet_visibility(self) -> None:
         if self.pet.isVisible():
-            if not self.tray_available:
+            if not self._tray_available():
                 self.pet.show_message("托盘没站稳，先不让我隐身。")
                 return
             self.pet.hide()
