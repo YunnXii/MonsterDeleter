@@ -15,6 +15,16 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from .aim_input import AimInputHook
+from .aim_overlay import AimOverlay
+from .aim_resolver import (
+    AimProbeResult,
+    AimProbeTask,
+    AimSelectTask,
+    AimSelectionResult,
+    AimStatus,
+    physical_cursor_position,
+)
 from .autostart import is_autostart_enabled, set_autostart
 from .character import CharacterConfig
 from .chibi_avatar import AvatarAction
@@ -236,6 +246,15 @@ class ResidentController:
         self._resolve_task: TargetResolveTask | None = None
         self._resolve_target_path: Path | None = None
 
+        self._aim_overlay: AimOverlay | None = None
+        self._aim_hook: AimInputHook | None = None
+        self._aim_probe_attempt_id = 0
+        self._aim_probe_task: AimProbeTask | None = None
+        self._aim_probe_inflight = False
+        self._aim_select_attempt_id = 0
+        self._aim_select_task: AimSelectTask | None = None
+        self._aim_selecting = False
+
         self.pet = PetWidget()
         self.pet.interaction_requested.connect(self._on_pet_interaction)
         self.pet.context_menu_requested.connect(self._show_context_menu)
@@ -278,7 +297,12 @@ class ResidentController:
 
     @property
     def busy(self) -> bool:
-        return self._resolving or self.active_overlay is not None or self._morph is not None
+        return (
+            self._resolving
+            or self.active_overlay is not None
+            or self._morph is not None
+            or self._aim_overlay is not None
+        )
 
     @staticmethod
     def _tray_available() -> bool:
@@ -472,8 +496,126 @@ class ResidentController:
         self.visibility_action.setEnabled(not self.busy)
 
     def _request_aim_mode(self) -> None:
-        # Still deliberately disabled until the next slice has real hit-testing.
-        self.pet.show_message("真准星正在接线。先用文件右键叫我。")
+        if self.busy:
+            return
+
+        self.pet.bubble.hide()
+        hook = AimInputHook()
+        hook.selected.connect(self._on_aim_selected)
+        hook.cancelled.connect(self._cancel_aim_mode)
+        if not hook.start():
+            hook.deleteLater()
+            self.pet.show_message("准星的保险栓没打开，暂时瞄不了。")
+            return
+
+        try:
+            overlay = AimOverlay()
+        except Exception:
+            hook.stop()
+            hook.deleteLater()
+            self.pet.show_message("准星没架起来，再试一次。")
+            return
+
+        overlay.probe_requested.connect(self._request_aim_probe)
+        self._aim_hook = hook
+        self._aim_overlay = overlay
+        self._aim_selecting = False
+        overlay.start()
+
+    def _request_aim_probe(self) -> None:
+        if self._aim_overlay is None or self._aim_selecting or self._aim_probe_inflight:
+            return
+
+        self._aim_probe_attempt_id += 1
+        attempt_id = self._aim_probe_attempt_id
+        self._aim_probe_inflight = True
+        task = AimProbeTask(attempt_id, physical_cursor_position())
+        task.signals.finished.connect(self._on_aim_probe_finished)
+        self._aim_probe_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_aim_probe_finished(self, attempt_id: int, result: AimProbeResult) -> None:
+        if attempt_id != self._aim_probe_attempt_id:
+            return
+        self._aim_probe_inflight = False
+        self._aim_probe_task = None
+
+        overlay = self._aim_overlay
+        if overlay is None or self._aim_selecting:
+            return
+
+        if result.status is AimStatus.FOUND and result.name:
+            overlay.set_preview(result.name, valid=True)
+        else:
+            overlay.set_preview(result.message or "这儿没东西，瞄准点。", valid=False)
+
+    def _on_aim_selected(self, physical_x: int, physical_y: int) -> None:
+        overlay = self._aim_overlay
+        if overlay is None or self._aim_selecting:
+            return
+
+        self._aim_selecting = True
+        overlay.set_resolving("我看看这倒霉蛋是谁……")
+        self._aim_select_attempt_id += 1
+        attempt_id = self._aim_select_attempt_id
+        task = AimSelectTask(attempt_id, (int(physical_x), int(physical_y)))
+        task.signals.finished.connect(self._on_aim_selection_finished)
+        self._aim_select_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_aim_selection_finished(
+        self,
+        attempt_id: int,
+        result: AimSelectionResult,
+    ) -> None:
+        if attempt_id != self._aim_select_attempt_id:
+            return
+        self._aim_select_task = None
+
+        overlay = self._aim_overlay
+        if overlay is None:
+            return
+
+        if not result.ok or result.path is None or result.target is None:
+            self._aim_selecting = False
+            overlay.set_preview(result.message or "这儿没东西，瞄准点。", valid=False)
+            return
+
+        target = Path(result.path)
+        target_global = physical_to_qt_global(result.target.center)
+        self._dispose_aim_mode()
+        QTimer.singleShot(
+            0,
+            lambda: self.start_task(target, target_global=target_global),
+        )
+
+    def _cancel_aim_mode(self) -> None:
+        if self._aim_overlay is None:
+            return
+        self._dispose_aim_mode()
+        if not self._quitting:
+            self.pet.show_message("行，不踹了。")
+
+    def _dispose_aim_mode(self) -> None:
+        self._aim_probe_attempt_id += 1
+        self._aim_select_attempt_id += 1
+        self._aim_probe_inflight = False
+        self._aim_selecting = False
+        self._aim_probe_task = None
+        self._aim_select_task = None
+
+        hook = self._aim_hook
+        self._aim_hook = None
+        if hook is not None:
+            hook.stop()
+            hook.deleteLater()
+
+        overlay = self._aim_overlay
+        self._aim_overlay = None
+        if overlay is not None:
+            overlay.stop()
+            overlay.close()
+            overlay.deleteLater()
 
     def _return_pet_home(self) -> None:
         if self.busy:
@@ -548,6 +690,9 @@ class ResidentController:
             return
         self._quitting = True
 
+        if self._aim_overlay is not None:
+            self._dispose_aim_mode()
+
         if self._resolving:
             self._resolve_attempt_id += 1
             self._resolving = False
@@ -565,6 +710,7 @@ class ResidentController:
         self._shutdown()
 
     def _shutdown(self) -> None:
+        self._dispose_aim_mode()
         self._dispose_morph()
         self.settings.sync()
         self.tray.hide()
