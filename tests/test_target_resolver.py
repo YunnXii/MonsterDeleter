@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import app.desktop_paths as desktop_paths
+import app.target_resolver as target_resolver
 from app.target_resolver import (
     PhysicalTarget,
     ResolveStatus,
@@ -24,6 +26,34 @@ def _target(name: str, *, selected: bool = False) -> PhysicalTarget:
 def test_candidate_names_support_hidden_extensions() -> None:
     names = _candidate_names(Path(r"C:\Users\test\Desktop\report.final.docx"))
     assert names == ("report.final.docx", "report.final")
+
+
+def test_desktop_roots_prefer_windows_known_folder_redirect(monkeypatch) -> None:
+    redirected = Path("D:/MovedDesktop")
+    public = Path("C:/Users/Public/Desktop")
+    legacy = Path("C:/Users/test/Desktop")
+
+    def fake_known_folder(folder_id):
+        if folder_id == desktop_paths.FOLDERID_DESKTOP:
+            return redirected
+        if folder_id == desktop_paths.FOLDERID_PUBLIC_DESKTOP:
+            return public
+        return None
+
+    monkeypatch.setattr(desktop_paths, "_known_folder_path", fake_known_folder)
+    monkeypatch.setattr(desktop_paths, "_registry_user_desktop", lambda: legacy)
+    monkeypatch.setattr(desktop_paths, "_fallback_paths", lambda: (legacy,))
+
+    roots = desktop_paths.desktop_roots()
+    assert roots == (redirected, public, legacy)
+
+
+def test_redirected_desktop_target_is_recognized(monkeypatch) -> None:
+    redirected = Path("D:/MovedDesktop")
+    monkeypatch.setattr(target_resolver, "desktop_roots", lambda: (redirected,))
+
+    assert target_resolver._is_desktop_target(redirected / "report.docx") is True
+    assert target_resolver._is_desktop_target(Path("C:/Temp/report.docx")) is False
 
 
 def test_selected_candidate_wins_over_unselected_duplicate() -> None:
