@@ -55,6 +55,21 @@ _HOOKPROC = ctypes.WINFUNCTYPE(
 )
 
 
+def right_cancel_transition(message: int, pending: bool) -> tuple[bool, bool, bool]:
+    """Return (consume, next_pending, emit_cancel) for an aim-mode right click.
+
+    Cancellation deliberately fires on button-up, not button-down. The hook must
+    remain installed long enough to swallow the complete right-click gesture;
+    otherwise Windows can receive the orphaned RBUTTONUP after the controller
+    tears the hook down and open the Desktop / Explorer context menu.
+    """
+    if int(message) == WM_RBUTTONDOWN:
+        return True, True, False
+    if int(message) == WM_RBUTTONUP:
+        return True, False, bool(pending)
+    return False, bool(pending), False
+
+
 class AimInputHook(QObject):
     """Temporary low-level input hook used only while real aim mode is active.
 
@@ -132,7 +147,10 @@ class AimInputHook(QObject):
         user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
         user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 
+        right_cancel_pending = False
+
         def mouse_callback(code: int, wparam, lparam):
+            nonlocal right_cancel_pending
             if code == HC_ACTION:
                 message = int(wparam)
                 if message in {WM_LBUTTONDOWN, WM_LBUTTONUP}:
@@ -142,8 +160,13 @@ class AimInputHook(QObject):
                         ).contents
                         self.selected.emit(int(data.pt.x), int(data.pt.y))
                     return 1
-                if message in {WM_RBUTTONDOWN, WM_RBUTTONUP}:
-                    if message == WM_RBUTTONDOWN:
+
+                consume, right_cancel_pending, emit_cancel = right_cancel_transition(
+                    message,
+                    right_cancel_pending,
+                )
+                if consume:
+                    if emit_cancel:
                         self.cancelled.emit()
                     return 1
             return user32.CallNextHookEx(None, code, wparam, lparam)
