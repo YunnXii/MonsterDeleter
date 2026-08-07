@@ -23,11 +23,14 @@ python main.py
 3. 新启动的进程把完整 Path 通过本地 IPC 发给常驻实例后立即退出；
 4. 常驻实例在后台通过 Windows UI Automation 查找这个 Path 对应的可见文件项；
 5. 找到后直接取得文件图标的真实屏幕矩形，不再出现旧准星；
-6. 小号 Pet 隐藏，正常尺寸家琦从 Pet 所在位置出发；
-7. 走到目标附近问“就是「xxx」？”；
-8. 确认后执行已经封版的踢飞动画和回收站逻辑。
+6. 常驻 Pet 以脚底为固定锚点，在约 `210ms` 内从小号平滑放大到执行尺寸；
+7. 正常尺寸家琦从同一个脚底位置出发，走到目标附近问“就是「xxx」？”；
+8. 确认后执行已经封版的踢飞动画和回收站逻辑；
+9. 成功或“不是不是”时快步回到原来的 Pet 停靠点，再用约 `180ms` 缩回小号待机状态。
 
-同一屏幕时，正常尺寸角色从常驻小人的脚底位置直接出发；如果 Pet 与目标位于不同显示器，则从目标屏幕距离 Pet 更近的一侧进入，避免用侧身走路精灵跨屏斜穿造成奇怪观感。
+同一屏幕时，正常尺寸角色从常驻小人的脚底位置直接出发，并在任务结束后真正走回原位。Pet 拖到哪里，哪里就是当前 Home。
+
+如果 Pet 与目标位于不同显示器，出发阶段仍从目标屏幕距离 Pet 更近的一侧进入；回程时先走出当前屏幕，再从 Home 所在屏幕靠近的一侧出现并走回停靠点，避免用侧身走路精灵硬跨两块显示器。
 
 定位时不会只凭文件名随便猜：
 
@@ -71,7 +74,9 @@ python main.py
 - 显示器变化导致位置失效时自动回主屏右下角；
 - 右键打开功能菜单；
 - 系统托盘兜底；
-- 当前用户级开机启动。
+- 当前用户级开机启动；
+- Pet ↔ 执行尺寸使用脚底锚定的平滑 morph，不再瞬间变大 / 变小；
+- 成功任务与确认取消会回 Home，删除失败后的“不踹了”仍保留高速逃跑喜剧退场。
 
 右键菜单：
 
@@ -100,7 +105,7 @@ Pet 点击互动通过 `InteractionProvider` 抽象。当前使用 `RandomQuipPr
 → 退出
 ```
 
-任务执行或目标解析期间暂不排队，新的请求会提示：
+任务执行、尺寸 morph 或目标解析期间暂不排队，新的请求会提示：
 
 ```text
 手上正踹着一个呢，等等。
@@ -111,6 +116,7 @@ Pet 点击互动通过 `InteractionProvider` 抽象。当前使用 `RandomQuipPr
 动画导演已封版：
 
 ```text
+Pet 出发：145px → 298px，约 210ms，脚底位置不变
 起步：1 → 2 → 3
 巡航：3 → 6 → 4 → 2 → 循环
 停车：提前预约第 3 帧合法停车相位
@@ -119,17 +125,21 @@ Pet 点击互动通过 `InteractionProvider` 抽象。当前使用 `RandomQuipPr
 确认：9 → 8 → 7，同时前移 40px
 攻击：转身完成 + 前移完成 → Kick
 命中：Kick 5 → 后台回收站任务
-成功：爆炸 + 图标抛飞 → 扶眼镜 → 微笑 → 冷脸
+成功：爆炸 + 图标沿真实踢击方向抛飞 → 扶眼镜 → 微笑 → 冷脸
+回程：约 640 px/s 快步返回 Home
+到家：298px → 145px，约 180ms，脚底位置不变
 失败：自然收腿 → 正面提示 → 重试 / 快速溜走
 ```
 
 关键参数：
 
-- 行走速度约 `390 px/s`；
+- 正常行走速度约 `390 px/s`；
+- 回 Home 速度约 `640 px/s`；
 - 巡航 `105 / 85 / 105 / 85ms`；
 - Kick 锚点 `impact_x=234 / impact_y=136`；
 - 等待位额外外移 `40px`；
-- Kick 第 5 帧是唯一命中帧。
+- Kick 第 5 帧是唯一命中帧；
+- 文件抛飞方向只看 Kick 命中时“人物 → 目标”的真实相对位置，不再用屏幕左右半区推断。
 
 删除运行在后台 `QRunnable`，Office / Shell 返回文件占用错误时不会冻结飞踢动画。
 
@@ -211,8 +221,9 @@ app/
   delete_task.py         后台删除 QRunnable
   direct_overlay.py      已知真实目标坐标的无准星任务 Overlay
   interactions.py        Pet 互动 Provider
-  pet_widget.py          常驻小人、拖动与气泡
-  resident_controller.py 常驻生命周期、托盘、目标解析与任务 session
+  pet_widget.py          常驻小人、拖动、气泡与视觉锚点
+  resident_controller.py 常驻生命周期、托盘、回 Home 与任务 session
+  resident_transition.py Pet ↔ 执行尺寸的脚底锚定 morph
   responsive_overlay.py  非阻塞删除动画 Overlay
   single_instance.py     QLocalServer / QLocalSocket IPC
   target_resolver.py     Path → Desktop / Explorer 可见文件矩形
