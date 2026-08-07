@@ -23,6 +23,7 @@ from .flying_icon import FlyingIcon, system_icon_pixmap
 
 MIN_WALK_DURATION_MS = 900
 STOP_REQUEST_LEAD_MS = 60
+TURN_APPROACH_MS = sum(ChibiAvatar.TURN_TO_TARGET_DURATIONS)
 WALK_FIRST_SAFE_STOP_MS = (
     sum(ChibiAvatar.WALK_START_DURATIONS)
     + ChibiAvatar.WALK_CRUISE_DURATIONS[0]
@@ -61,6 +62,20 @@ def phase_aligned_walk_duration_ms(distance_px: int, walk_speed: int) -> int:
     return min((lower, upper), key=speed_error)
 
 
+def waiting_position_from_attack(
+    attack_pos: QPoint,
+    *,
+    facing_right: bool,
+    waiting_offset: int,
+) -> QPoint:
+    """Move the waiting pose away from the target without changing kick anchor."""
+    direction = 1 if facing_right else -1
+    return QPoint(
+        attack_pos.x() - direction * max(0, waiting_offset),
+        attack_pos.y(),
+    )
+
+
 class DesktopCleanerOverlay(QWidget):
     WALK_BRAKE_MS = sum(ChibiAvatar.WALK_STOP_DURATIONS)
 
@@ -73,7 +88,10 @@ class DesktopCleanerOverlay(QWidget):
         self._sequence_started = False
         self._deleted = False
         self._delete_result: DeleteResult | None = None
-        self._walk_end: QPoint | None = None
+        self._attack_pos: QPoint | None = None
+        self._waiting_pos: QPoint | None = None
+        self._turn_complete = False
+        self._approach_complete = False
         self.flying_icon: FlyingIcon | None = None
 
         self.setWindowFlags(
@@ -219,7 +237,14 @@ class DesktopCleanerOverlay(QWidget):
             return
         super().keyPressEvent(event)
 
-    def _avatar_end_position(self) -> tuple[QPoint, bool]:
+    def _clamp_avatar_position(self, position: QPoint) -> QPoint:
+        return QPoint(
+            max(-24, min(self.width() - self.avatar.width() + 24, position.x())),
+            max(-24, min(self.height() - self.avatar.height() + 24, position.y())),
+        )
+
+    def _avatar_stage_positions(self) -> tuple[QPoint, QPoint, bool]:
+        """Return exact kick position and a more relaxed confirmation position."""
         assert self.target_pos is not None
         target_x, target_y = self.target_pos.x(), self.target_pos.y()
         facing_right = target_x >= self.width() // 2
@@ -229,22 +254,31 @@ class DesktopCleanerOverlay(QWidget):
             if facing_right
             else self.avatar.width() - self.config.impact_x
         )
-        end_x = target_x - local_impact_x
-        stand_y = target_y - self.config.impact_y
-
-        end_x = max(-24, min(self.width() - self.avatar.width() + 24, end_x))
-        stand_y = max(-24, min(self.height() - self.avatar.height() + 24, stand_y))
-        return QPoint(end_x, stand_y), facing_right
+        attack_pos = self._clamp_avatar_position(
+            QPoint(
+                target_x - local_impact_x,
+                target_y - self.config.impact_y,
+            )
+        )
+        waiting_pos = self._clamp_avatar_position(
+            waiting_position_from_attack(
+                attack_pos,
+                facing_right=facing_right,
+                waiting_offset=self.config.waiting_offset,
+            )
+        )
+        return attack_pos, waiting_pos, facing_right
 
     def _start_walk(self) -> None:
-        end, facing_right = self._avatar_end_position()
-        self._walk_end = end
+        attack_pos, waiting_pos, facing_right = self._avatar_stage_positions()
+        self._attack_pos = attack_pos
+        self._waiting_pos = waiting_pos
         direction = 1 if facing_right else -1
         start_x = -self.avatar.width() - 30 if facing_right else self.width() + 30
-        start = QPoint(start_x, end.y())
+        start = QPoint(start_x, waiting_pos.y())
 
-        pre_stop_x = end.x() - direction * self.config.stop_distance
-        pre_stop = QPoint(pre_stop_x, end.y())
+        pre_stop_x = waiting_pos.x() - direction * self.config.stop_distance
+        pre_stop = QPoint(pre_stop_x, waiting_pos.y())
 
         self.avatar.set_facing_right(facing_right)
         self.avatar.move(start)
@@ -268,7 +302,7 @@ class DesktopCleanerOverlay(QWidget):
         self.walk_stop_timer.start(max(1, duration - STOP_REQUEST_LEAD_MS))
 
     def _start_walk_brake(self) -> None:
-        if self._walk_end is None:
+        if self._waiting_pos is None:
             return
 
         self.walk_stop_timer.stop()
@@ -279,13 +313,13 @@ class DesktopCleanerOverlay(QWidget):
         self.brake_animation = QPropertyAnimation(self.avatar, b"pos", self)
         self.brake_animation.setDuration(self.WALK_BRAKE_MS)
         self.brake_animation.setStartValue(self.avatar.pos())
-        self.brake_animation.setEndValue(self._walk_end)
+        self.brake_animation.setEndValue(self._waiting_pos)
         self.brake_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.brake_animation.start()
 
     def _on_walk_stopped(self) -> None:
-        if self._walk_end is not None:
-            self.avatar.move(self._walk_end)
+        if self._waiting_pos is not None:
+            self.avatar.move(self._waiting_pos)
         self._show_confirmation()
 
     def _show_confirmation(self) -> None:
@@ -308,14 +342,49 @@ class DesktopCleanerOverlay(QWidget):
         self.dialog.raise_()
 
     def _confirm(self) -> None:
+        if self._attack_pos is None:
+            return
+
         self.dialog.hide()
-        # Reverse the final walk turn (9 -> 8 -> 7) before entering the side-
-        # facing kick sheet. This avoids a one-frame snap from front to side.
+        self._turn_complete = False
+        self._approach_complete = False
+
+        # Turn back toward the target while stepping from the relaxed waiting
+        # position into the exact kick anchor. Kick starts only after BOTH are
+        # complete, so timer jitter cannot reintroduce an alignment snap.
         self.avatar.play_turn_to_target()
+        self.approach_animation = QPropertyAnimation(self.avatar, b"pos", self)
+        self.approach_animation.setDuration(TURN_APPROACH_MS)
+        self.approach_animation.setStartValue(self.avatar.pos())
+        self.approach_animation.setEndValue(self._attack_pos)
+        self.approach_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.approach_animation.finished.connect(self._on_approach_finished)
+        self.approach_animation.start()
+
+    def _on_approach_finished(self) -> None:
+        if self._attack_pos is not None:
+            self.avatar.move(self._attack_pos)
+        self._approach_complete = True
+        self._maybe_start_kick()
+
+    def _maybe_start_kick(self) -> None:
+        if (
+            self._turn_complete
+            and self._approach_complete
+            and self.avatar.current_action is AvatarAction.TURN
+        ):
+            if self._attack_pos is not None:
+                self.avatar.move(self._attack_pos)
+            self.avatar.play_kick()
 
     def _stop_motion_animations(self) -> None:
         self.walk_stop_timer.stop()
-        for name in ("walk_animation", "brake_animation", "exit_animation"):
+        for name in (
+            "walk_animation",
+            "brake_animation",
+            "approach_animation",
+            "exit_animation",
+        ):
             animation = getattr(self, name, None)
             if animation is not None:
                 animation.stop()
@@ -333,7 +402,10 @@ class DesktopCleanerOverlay(QWidget):
         self.avatar.stop()
         self.avatar.hide()
         self.target_pos = None
-        self._walk_end = None
+        self._attack_pos = None
+        self._waiting_pos = None
+        self._turn_complete = False
+        self._approach_complete = False
         self._sequence_started = False
         self._deleted = False
         self._delete_result = None
@@ -376,7 +448,8 @@ class DesktopCleanerOverlay(QWidget):
 
     def _on_avatar_animation_finished(self) -> None:
         if self.avatar.current_action is AvatarAction.TURN:
-            self.avatar.play_kick()
+            self._turn_complete = True
+            self._maybe_start_kick()
         elif self.avatar.current_action is AvatarAction.KICK:
             self._show_result()
         elif self.avatar.current_action is AvatarAction.VICTORY:
