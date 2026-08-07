@@ -9,12 +9,13 @@ from PyQt6.QtWidgets import QWidget
 
 from .character import CharacterConfig
 from .resources import resource_path
-from .sprite_strip import normalize_sprite_strip
 
 
 class AvatarAction(Enum):
     IDLE = auto()
     WALK = auto()
+    WAITING = auto()
+    TURN = auto()
     KICK = auto()
     VICTORY = auto()
 
@@ -28,10 +29,22 @@ class ChibiAvatar(QWidget):
     # Source art is numbered 1..9. Runtime indices are zero-based.
     # Start: 1 -> 2 -> 3
     # Cruise: 4 <-> 3 (alternate legs)
-    # Stop: after frame 3 finishes, jump to 6 -> 7 -> 8 -> 9.
+    # Stop: after frame 3 finishes, continue 6 -> 7 -> 8 -> 9.
     WALK_START = (0, 1, 2)
+    WALK_START_DURATIONS = (140, 120, 110)
     WALK_CRUISE = (3, 2)
+    WALK_CRUISE_DURATIONS = (120, 120)
     WALK_STOP = (5, 6, 7, 8)
+    WALK_STOP_DURATIONS = (120, 140, 160, 220)
+
+    # Walk frame 9 faces the user. When the user confirms, briefly reverse the
+    # final turn so the character looks back at the target before kicking.
+    WAIT_FRONT_FRAME = 8
+    TURN_TO_TARGET = (8, 7, 6)
+    TURN_TO_TARGET_DURATIONS = (90, 80, 80)
+
+    KICK_DURATIONS = (130, 100, 95, 75, 90, 85, 110, 160)
+    VICTORY_DURATIONS = (180, 180, 200, 220, 420, 300)
 
     def __init__(self, config: CharacterConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -55,10 +68,15 @@ class ChibiAvatar(QWidget):
         self._walk_phase = "idle"
         self._pending_walk_stop = False
         self._impact_sent = False
+        self._bob_offset = 0
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._advance)
+
+        self._idle_bob_timer = QTimer(self)
+        self._idle_bob_timer.setInterval(700)
+        self._idle_bob_timer.timeout.connect(self._toggle_idle_bob)
 
     @property
     def current_action(self) -> AvatarAction:
@@ -72,7 +90,16 @@ class ChibiAvatar(QWidget):
     def current_sprite_index(self) -> int:
         return self._sprite_frame
 
+    @property
+    def bob_offset(self) -> int:
+        return self._bob_offset
+
     def _load_strip(self, filename: str, frame_count: int) -> list[QPixmap]:
+        """Load a finalized, uniformly packed sprite strip.
+
+        Sprite cleanup and repacking are deliberately offline authoring steps.
+        Runtime code only validates the finished PNG and slices equal frames.
+        """
         path = resource_path("characters", "jiaqi", "sprites", filename)
         if not path.exists():
             raise RuntimeError(f"找不到角色精灵图：{path}")
@@ -80,22 +107,25 @@ class ChibiAvatar(QWidget):
         sheet = QImage(str(path))
         if sheet.isNull():
             raise RuntimeError(f"无法加载角色精灵图：{path}")
-
-        # The Photoshop-cleaned artwork keeps the original transparency, but
-        # some poses (especially kick) are no longer evenly distributed on x.
-        # Re-detect each pose from transparent gaps and repack it into equal
-        # frame canvases before scaling for display. This step never re-keys or
-        # modifies alpha, so restored white eyes/shoes remain opaque.
-        normalized = normalize_sprite_strip(sheet, frame_count)
-        return [
-            QPixmap.fromImage(frame).scaled(
-                self.width(),
-                self.height(),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+        if sheet.width() % frame_count != 0:
+            raise RuntimeError(
+                f"角色精灵图不是标准等宽帧：{filename} "
+                f"({sheet.width()}px / {frame_count} 帧)"
             )
-            for frame in normalized
-        ]
+
+        frame_width = sheet.width() // frame_count
+        frames: list[QPixmap] = []
+        for index in range(frame_count):
+            frame = sheet.copy(index * frame_width, 0, frame_width, sheet.height())
+            frames.append(
+                QPixmap.fromImage(frame).scaled(
+                    self.width(),
+                    self.height(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        return frames
 
     def set_facing_right(self, value: bool) -> None:
         self._facing_right = value
@@ -105,17 +135,40 @@ class ChibiAvatar(QWidget):
         self.stop()
         self._action = AvatarAction.IDLE
         self._walk_phase = "idle"
-        # Victory sheet frame 6 is the stable side-facing cold expression.
+        # Victory frame 6 is the stable side-facing cold expression.
         self._sprite_frame = 5
         self.update()
 
+    def play_waiting_front(self) -> None:
+        """Face the user while waiting for the confirmation click."""
+        self.stop()
+        self._action = AvatarAction.WAITING
+        self._walk_phase = "waiting"
+        self._sprite_frame = self.WAIT_FRONT_FRAME
+        self._bob_offset = 0
+        self._idle_bob_timer.start()
+        self.update()
+
+    def play_turn_to_target(self) -> None:
+        """Turn from the front-facing wait pose back toward the target."""
+        self._stop_idle_bob()
+        self._action = AvatarAction.TURN
+        self._walk_phase = "idle"
+        self._play_sequence(
+            self.TURN_TO_TARGET,
+            self.TURN_TO_TARGET_DURATIONS,
+            loop=False,
+            on_end=self.animation_finished.emit,
+        )
+
     def play_walk(self) -> None:
+        self._stop_idle_bob()
         self._action = AvatarAction.WALK
         self._walk_phase = "start"
         self._pending_walk_stop = False
         self._play_sequence(
             self.WALK_START,
-            (145, 115, 95),
+            self.WALK_START_DURATIONS,
             loop=False,
             on_end=self._begin_walk_cruise,
         )
@@ -125,41 +178,58 @@ class ChibiAvatar(QWidget):
             self._pending_walk_stop = True
 
     def play_walk_cruise(self) -> None:
-        """Use only the two alternating leg frames when leaving the screen."""
+        """Use the two alternating-leg frames when leaving the screen."""
+        self._stop_idle_bob()
         self._action = AvatarAction.WALK
         self._walk_phase = "cruise"
         self._pending_walk_stop = False
         self._play_sequence(
             self.WALK_CRUISE,
-            (95, 95),
+            self.WALK_CRUISE_DURATIONS,
             loop=True,
             on_end=None,
         )
 
     def play_kick(self) -> None:
+        self._stop_idle_bob()
         self._action = AvatarAction.KICK
         self._walk_phase = "idle"
         self._impact_sent = False
         self._play_sequence(
             tuple(range(8)),
-            (140, 95, 90, 80, 115, 95, 125, 165),
+            self.KICK_DURATIONS,
             loop=False,
             on_end=self.animation_finished.emit,
         )
 
     def play_victory(self) -> None:
+        self._stop_idle_bob()
         self._action = AvatarAction.VICTORY
         self._walk_phase = "idle"
         self._play_sequence(
             tuple(range(6)),
-            (180, 150, 190, 150, 260, 220),
+            self.VICTORY_DURATIONS,
             loop=False,
             on_end=self.animation_finished.emit,
         )
 
     def stop(self) -> None:
         self._timer.stop()
+        self._stop_idle_bob()
         self._pending_walk_stop = False
+
+    def _stop_idle_bob(self) -> None:
+        self._idle_bob_timer.stop()
+        if self._bob_offset != 0:
+            self._bob_offset = 0
+            self.update()
+
+    def _toggle_idle_bob(self) -> None:
+        if self._action is not AvatarAction.WAITING:
+            self._stop_idle_bob()
+            return
+        self._bob_offset = -1 if self._bob_offset == 0 else 0
+        self.update()
 
     def _begin_walk_cruise(self) -> None:
         if self._action is not AvatarAction.WALK:
@@ -167,7 +237,7 @@ class ChibiAvatar(QWidget):
         self._walk_phase = "cruise"
         self._play_sequence(
             self.WALK_CRUISE,
-            (95, 95),
+            self.WALK_CRUISE_DURATIONS,
             loop=True,
             on_end=None,
         )
@@ -178,7 +248,7 @@ class ChibiAvatar(QWidget):
         self.walk_stop_started.emit()
         self._play_sequence(
             self.WALK_STOP,
-            (105, 115, 135, 180),
+            self.WALK_STOP_DURATIONS,
             loop=False,
             on_end=self._finish_walk_stop,
         )
@@ -207,8 +277,8 @@ class ChibiAvatar(QWidget):
         self._timer.start(durations[0])
 
     def _advance(self) -> None:
-        # Stop requests are phase-locked: frame 4 can never jump directly into the
-        # braking artwork. We finish source frame 3 (zero-based index 2) first.
+        # Stop requests are phase-locked: source frame 4 can never jump directly
+        # into braking. Source frame 3 (zero-based index 2) must finish first.
         if (
             self._action is AvatarAction.WALK
             and self._walk_phase == "cruise"
@@ -235,7 +305,7 @@ class ChibiAvatar(QWidget):
 
     def _show_frame(self, frame_index: int) -> None:
         self._sprite_frame = frame_index
-        # Kick sheet frame 5 is the single fully extended impact pose.
+        # Kick frame 5 is the single fully extended impact pose.
         if (
             self._action is AvatarAction.KICK
             and frame_index == 4
@@ -246,7 +316,7 @@ class ChibiAvatar(QWidget):
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
-        if self._action is AvatarAction.WALK:
+        if self._action in (AvatarAction.WALK, AvatarAction.WAITING, AvatarAction.TURN):
             frame = self._frames["walk"][self._sprite_frame]
         elif self._action is AvatarAction.KICK:
             frame = self._frames["kick"][self._sprite_frame]
@@ -258,4 +328,4 @@ class ChibiAvatar(QWidget):
         if not self._facing_right:
             painter.translate(self.width(), 0)
             painter.scale(-1, 1)
-        painter.drawPixmap(0, 0, frame)
+        painter.drawPixmap(0, self._bob_offset, frame)
