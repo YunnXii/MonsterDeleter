@@ -29,8 +29,8 @@ def _avatar() -> ChibiAvatar:
 def test_animation_director_constants_match_plan() -> None:
     assert ChibiAvatar.WALK_START == (0, 1, 2)
     assert ChibiAvatar.WALK_START_DURATIONS == (140, 120, 110)
-    assert ChibiAvatar.WALK_CRUISE == (3, 2)
-    assert ChibiAvatar.WALK_CRUISE_DURATIONS == (120, 120)
+    assert ChibiAvatar.WALK_CRUISE == (2, 5, 3, 1)
+    assert ChibiAvatar.WALK_CRUISE_DURATIONS == (120, 120, 120, 120)
     assert ChibiAvatar.WALK_STOP == (5, 6, 7, 8)
     assert ChibiAvatar.WALK_STOP_DURATIONS == (120, 140, 160, 220)
     assert ChibiAvatar.WAIT_FRONT_FRAME == 8
@@ -40,24 +40,50 @@ def test_animation_director_constants_match_plan() -> None:
     assert ChibiAvatar.VICTORY_DURATIONS == (180, 180, 200, 220, 420, 300)
 
 
-def test_stop_request_waits_for_source_frame_three() -> None:
+def test_experimental_cruise_loops_source_frames_3_6_4_2() -> None:
     avatar = _avatar()
     try:
         avatar._action = AvatarAction.WALK
         avatar._begin_walk_cruise()
-        assert avatar.walk_phase == "cruise"
-        assert avatar.current_sprite_index == 3  # source frame 4
+        assert avatar.current_sprite_index == 2  # source frame 3
 
-        avatar.request_walk_stop()
         avatar._advance()
+        assert avatar.current_sprite_index == 5  # source frame 6
+        avatar._advance()
+        assert avatar.current_sprite_index == 3  # source frame 4
+        avatar._advance()
+        assert avatar.current_sprite_index == 1  # source frame 2
+        avatar._advance()
+        assert avatar.current_sprite_index == 2  # source frame 3 again
+    finally:
+        avatar.stop()
+        avatar.close()
 
-        # A stop request received on source frame 4 must first advance to frame 3.
+
+def test_stop_request_waits_until_source_frame_three() -> None:
+    avatar = _avatar()
+    try:
+        avatar._action = AvatarAction.WALK
+        avatar._begin_walk_cruise()
+
+        # Move from source frame 3 to source frame 6, then request braking.
+        avatar._advance()
+        assert avatar.current_sprite_index == 5
+        avatar.request_walk_stop()
+
+        # The experimental cycle must keep going 6 -> 4 -> 2 -> 3.
+        avatar._advance()
+        assert avatar.walk_phase == "cruise"
+        assert avatar.current_sprite_index == 3
+        avatar._advance()
+        assert avatar.walk_phase == "cruise"
+        assert avatar.current_sprite_index == 1
+        avatar._advance()
         assert avatar.walk_phase == "cruise"
         assert avatar.current_sprite_index == 2
 
-        avatar._advance()
-
         # Only after source frame 3 has finished may braking begin at frame 6.
+        avatar._advance()
         assert avatar.walk_phase == "stop"
         assert avatar.current_sprite_index == 5
     finally:
@@ -70,8 +96,7 @@ def test_stop_request_on_source_frame_three_brakes_immediately_after_it() -> Non
     try:
         avatar._action = AvatarAction.WALK
         avatar._begin_walk_cruise()
-        avatar._sequence_pos = 1
-        avatar._show_frame(2)  # source frame 3
+        assert avatar.current_sprite_index == 2  # source frame 3
         avatar.request_walk_stop()
 
         avatar._advance()
