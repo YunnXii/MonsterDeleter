@@ -8,6 +8,11 @@ from PyQt6.QtWidgets import QApplication
 
 from app.character import CharacterConfig
 from app.chibi_avatar import AvatarAction, ChibiAvatar
+from app.overlay import (
+    WALK_CRUISE_CYCLE_MS,
+    WALK_FIRST_SAFE_STOP_MS,
+    phase_aligned_walk_duration_ms,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -45,6 +50,21 @@ def test_animation_director_constants_match_plan() -> None:
     assert ChibiAvatar.TURN_TO_TARGET_DURATIONS == (90, 80, 80)
     assert ChibiAvatar.KICK_DURATIONS == (130, 100, 95, 75, 90, 85, 110, 160)
     assert ChibiAvatar.VICTORY_DURATIONS == (180, 180, 200, 220, 420, 300)
+
+
+def test_phase_aligned_duration_lands_on_legal_frame_three_boundary() -> None:
+    # 780 px at 390 px/s is nominally 2000 ms; the nearest legal frame-3
+    # boundary is 1995 ms with the current animation director timings.
+    duration = phase_aligned_walk_duration_ms(780, 390)
+    assert duration == 1995
+    assert (duration - WALK_FIRST_SAFE_STOP_MS) % WALK_CRUISE_CYCLE_MS == 0
+
+
+def test_phase_alignment_prefers_smaller_effective_speed_change() -> None:
+    # Around the midpoint between 855 and 1235 ms, using the later boundary
+    # changes effective speed less than rushing to the earlier one.
+    duration = phase_aligned_walk_duration_ms(408, 390)
+    assert duration == 1235
 
 
 def test_cruise_loops_source_frames_3_6_4_2() -> None:
