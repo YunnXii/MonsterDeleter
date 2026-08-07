@@ -26,6 +26,9 @@ from .flying_icon import FlyingIcon, system_icon_pixmap
 MIN_WALK_DURATION_MS = 900
 STOP_REQUEST_LEAD_MS = 60
 TURN_APPROACH_MS = sum(ChibiAvatar.TURN_TO_TARGET_DURATIONS)
+QUICK_EXIT_SPEED_PX_S = 1200
+QUICK_EXIT_MIN_MS = 420
+QUICK_EXIT_MAX_MS = 900
 WALK_FIRST_SAFE_STOP_MS = (
     sum(ChibiAvatar.WALK_START_DURATIONS)
     + ChibiAvatar.WALK_CRUISE_DURATIONS[0]
@@ -37,6 +40,12 @@ class DialogMode(Enum):
     CONFIRM = auto()
     FAILURE = auto()
     RESULT = auto()
+
+
+class TurnPurpose(Enum):
+    ATTACK = auto()
+    RETRY = auto()
+    BAIL_OUT = auto()
 
 
 @dataclass(frozen=True)
@@ -133,6 +142,7 @@ class DesktopCleanerOverlay(QWidget):
         self._waiting_pos: QPoint | None = None
         self._turn_complete = False
         self._approach_complete = False
+        self._turn_purpose: TurnPurpose | None = None
         self._dialog_mode = DialogMode.CONFIRM
         self.flying_icon: FlyingIcon | None = None
 
@@ -428,7 +438,7 @@ class DesktopCleanerOverlay(QWidget):
         if self._dialog_mode is DialogMode.CONFIRM:
             self._retry_selection()
         elif self._dialog_mode is DialogMode.FAILURE:
-            self._exit()
+            self._bail_out()
 
     def _confirm(self) -> None:
         if self._attack_pos is None:
@@ -437,6 +447,7 @@ class DesktopCleanerOverlay(QWidget):
         self.dialog.hide()
         self._turn_complete = False
         self._approach_complete = False
+        self._turn_purpose = TurnPurpose.ATTACK
 
         # Turn back toward the target while stepping from the relaxed waiting
         # position into the exact kick anchor. Kick starts only after BOTH are
@@ -458,23 +469,55 @@ class DesktopCleanerOverlay(QWidget):
 
     def _maybe_start_kick(self) -> None:
         if (
-            self._turn_complete
+            self._turn_purpose is TurnPurpose.ATTACK
+            and self._turn_complete
             and self._approach_complete
             and self.avatar.current_action is AvatarAction.TURN
         ):
+            self._turn_purpose = None
             if self._attack_pos is not None:
                 self.avatar.move(self._attack_pos)
             self.avatar.play_kick()
 
     def _retry_delete(self) -> None:
-        """Retry from the exact attack position without replaying the walk-in."""
+        """Retry from the attack position, but turn back naturally before kicking."""
         if self._attack_pos is None:
             return
         self.dialog.hide()
         self._deleted = False
         self._delete_result = None
         self.avatar.move(self._attack_pos)
-        self.avatar.play_kick()
+        self._turn_purpose = TurnPurpose.RETRY
+        self.avatar.play_turn_to_target()
+
+    def _bail_out(self) -> None:
+        """Give up gracefully: turn toward the nearest edge, then get out fast."""
+        self.dialog.hide()
+        self._stop_motion_animations()
+        avatar_center = self.avatar.x() + self.avatar.width() // 2
+        exit_right = avatar_center >= self.width() // 2
+        self.avatar.set_facing_right(exit_right)
+        self._turn_purpose = TurnPurpose.BAIL_OUT
+        self.avatar.play_turn_to_target()
+
+    def _start_quick_exit(self) -> None:
+        avatar_center = self.avatar.x() + self.avatar.width() // 2
+        exit_right = avatar_center >= self.width() // 2
+        end_x = self.width() + 80 if exit_right else -self.avatar.width() - 80
+        self.avatar.set_facing_right(exit_right)
+        self.avatar.play_walk_cruise()
+
+        distance = abs(end_x - self.avatar.x())
+        duration = round(distance * 1000 / QUICK_EXIT_SPEED_PX_S)
+        duration = max(QUICK_EXIT_MIN_MS, min(QUICK_EXIT_MAX_MS, duration))
+
+        self.exit_animation = QPropertyAnimation(self.avatar, b"pos", self)
+        self.exit_animation.setDuration(duration)
+        self.exit_animation.setStartValue(self.avatar.pos())
+        self.exit_animation.setEndValue(QPoint(end_x, self.avatar.y()))
+        self.exit_animation.setEasingCurve(QEasingCurve.Type.InCubic)
+        self.exit_animation.finished.connect(self._exit)
+        self.exit_animation.start()
 
     def _stop_motion_animations(self) -> None:
         self.walk_stop_timer.stop()
@@ -509,6 +552,7 @@ class DesktopCleanerOverlay(QWidget):
         self._waiting_pos = None
         self._turn_complete = False
         self._approach_complete = False
+        self._turn_purpose = None
         self._sequence_started = False
         self._deleted = False
         self._delete_result = None
@@ -552,8 +596,16 @@ class DesktopCleanerOverlay(QWidget):
 
     def _on_avatar_animation_finished(self) -> None:
         if self.avatar.current_action is AvatarAction.TURN:
-            self._turn_complete = True
-            self._maybe_start_kick()
+            purpose = self._turn_purpose
+            if purpose is TurnPurpose.BAIL_OUT:
+                self._turn_purpose = None
+                self._start_quick_exit()
+            elif purpose is TurnPurpose.RETRY:
+                self._turn_purpose = None
+                self.avatar.play_kick()
+            else:
+                self._turn_complete = True
+                self._maybe_start_kick()
         elif self.avatar.current_action is AvatarAction.KICK:
             self._show_result()
         elif self.avatar.current_action is AvatarAction.VICTORY:
@@ -567,9 +619,9 @@ class DesktopCleanerOverlay(QWidget):
         )
 
         if not result.ok:
-            # No smug victory after a failed delete. Hold the cold side pose and
-            # let the user close the offending program, then retry in place.
-            self.avatar.play_idle()
+            # Let the kick finish, then settle back toward the user instead of
+            # freezing on the final side-facing kick pose.
+            self.avatar.play_failure_wait()
             self._show_failure(result)
             return
 
