@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import math
+import base64
 from enum import Enum, auto
+from typing import Callable
 
-from PyQt6.QtCore import QPointF, QRectF, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QPainter, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .character import CharacterConfig
+from .resources import resource_path
 
 
 class AvatarAction(Enum):
@@ -20,229 +22,248 @@ class AvatarAction(Enum):
 class ChibiAvatar(QWidget):
     animation_finished = pyqtSignal()
     impact = pyqtSignal()
+    walk_stop_started = pyqtSignal()
+    walk_stopped = pyqtSignal()
+
+    WALK_START = (0, 1, 2)
+    WALK_CRUISE = (3, 2)  # 原图第4帧 ↔ 第3帧：左右腿交替
+    WALK_STOP = (5, 6, 7, 8)  # 只能从第3帧接第6帧开始收步
 
     def __init__(self, config: CharacterConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config = config
         self.setFixedSize(config.width, config.height)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self._frames = {
+            "walk": self._load_strip("walk.png", 9),
+            "kick": self._load_strip("kick.png", 8),
+            "victory": self._load_strip("victory.png", 6),
+        }
         self._action = AvatarAction.IDLE
-        self._frame = 0
-        self._duration = 1
-        self._loop = True
         self._facing_right = True
+        self._sprite_frame = 5
+        self._sequence: tuple[int, ...] = (5,)
+        self._durations: tuple[int, ...] = (100,)
+        self._sequence_pos = 0
+        self._loop = False
+        self._on_sequence_end: Callable[[], None] | None = None
+        self._walk_phase = "idle"
+        self._pending_walk_stop = False
         self._impact_sent = False
 
         self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._advance)
-        self._timer.setInterval(max(1, 1000 // config.fps))
 
     @property
     def current_action(self) -> AvatarAction:
         return self._action
+
+    @property
+    def walk_phase(self) -> str:
+        return self._walk_phase
+
+    @property
+    def current_sprite_index(self) -> int:
+        return self._sprite_frame
+
+    def _load_strip(self, filename: str, frame_count: int) -> list[QPixmap]:
+        sprite_dir = resource_path("characters", "jiaqi", "sprites")
+        path = sprite_dir / filename
+        sheet = QPixmap(str(path)) if path.exists() else QPixmap()
+
+        # Web 端修改仓库时二进制素材以有序 base64 分片保存；
+        # 如果以后直接放入同名 PNG，这段会自动优先使用 PNG。
+        if sheet.isNull():
+            part_paths = sorted(sprite_dir.glob(f"{filename}.b64.*"))
+            if part_paths:
+                encoded = "".join(
+                    part.read_text(encoding="ascii").strip() for part in part_paths
+                )
+                sheet.loadFromData(base64.b64decode(encoded), "PNG")
+
+        if sheet.isNull():
+            raise RuntimeError(f"无法加载角色精灵图：{path}")
+        if sheet.width() % frame_count != 0:
+            raise RuntimeError(
+                f"精灵图宽度不能被帧数整除：{path} ({sheet.width()}x{sheet.height()})"
+            )
+
+        source_width = sheet.width() // frame_count
+        source_height = sheet.height()
+        frames: list[QPixmap] = []
+        for index in range(frame_count):
+            frame = sheet.copy(index * source_width, 0, source_width, source_height)
+            frames.append(
+                frame.scaled(
+                    self.width(),
+                    self.height(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        return frames
 
     def set_facing_right(self, value: bool) -> None:
         self._facing_right = value
         self.update()
 
     def play_idle(self) -> None:
-        self._start(AvatarAction.IDLE, duration=24, loop=True)
+        self.stop()
+        self._action = AvatarAction.IDLE
+        self._walk_phase = "idle"
+        # 收尾图最后一帧：稳定的侧身冷脸站姿。
+        self._sprite_frame = 5
+        self.update()
 
     def play_walk(self) -> None:
-        self._start(AvatarAction.WALK, duration=16, loop=True)
+        self._action = AvatarAction.WALK
+        self._walk_phase = "start"
+        self._pending_walk_stop = False
+        self._play_sequence(
+            self.WALK_START,
+            (145, 115, 95),
+            loop=False,
+            on_end=self._begin_walk_cruise,
+        )
+
+    def request_walk_stop(self) -> None:
+        if self._action is AvatarAction.WALK:
+            self._pending_walk_stop = True
+
+    def play_walk_cruise(self) -> None:
+        """Directly use the two-frame walk cycle when leaving the screen."""
+        self._action = AvatarAction.WALK
+        self._walk_phase = "cruise"
+        self._pending_walk_stop = False
+        self._play_sequence(
+            self.WALK_CRUISE,
+            (95, 95),
+            loop=True,
+            on_end=None,
+        )
 
     def play_kick(self) -> None:
+        self._action = AvatarAction.KICK
+        self._walk_phase = "idle"
         self._impact_sent = False
-        self._start(AvatarAction.KICK, duration=18, loop=False)
+        self._play_sequence(
+            tuple(range(8)),
+            (140, 95, 90, 80, 115, 95, 125, 165),
+            loop=False,
+            on_end=self.animation_finished.emit,
+        )
 
     def play_victory(self) -> None:
-        self._start(AvatarAction.VICTORY, duration=18, loop=False)
+        self._action = AvatarAction.VICTORY
+        self._walk_phase = "idle"
+        self._play_sequence(
+            tuple(range(6)),
+            (180, 150, 190, 150, 260, 220),
+            loop=False,
+            on_end=self.animation_finished.emit,
+        )
 
     def stop(self) -> None:
         self._timer.stop()
+        self._pending_walk_stop = False
 
-    def _start(self, action: AvatarAction, *, duration: int, loop: bool) -> None:
-        self._action = action
-        self._frame = 0
-        self._duration = max(1, duration)
+    def _begin_walk_cruise(self) -> None:
+        if self._action is not AvatarAction.WALK:
+            return
+        self._walk_phase = "cruise"
+        self._play_sequence(
+            self.WALK_CRUISE,
+            (95, 95),
+            loop=True,
+            on_end=None,
+        )
+
+    def _begin_walk_stop(self) -> None:
+        self._pending_walk_stop = False
+        self._walk_phase = "stop"
+        self.walk_stop_started.emit()
+        self._play_sequence(
+            self.WALK_STOP,
+            (105, 115, 135, 180),
+            loop=False,
+            on_end=self._finish_walk_stop,
+        )
+
+    def _finish_walk_stop(self) -> None:
+        self._walk_phase = "stopped"
+        self.walk_stopped.emit()
+
+    def _play_sequence(
+        self,
+        frames: tuple[int, ...],
+        durations: tuple[int, ...],
+        *,
+        loop: bool,
+        on_end: Callable[[], None] | None,
+    ) -> None:
+        if len(frames) != len(durations) or not frames:
+            raise ValueError("frames 与 durations 必须非空且长度一致")
+        self._timer.stop()
+        self._sequence = frames
+        self._durations = durations
+        self._sequence_pos = 0
         self._loop = loop
-        self._timer.start()
-        self.update()
+        self._on_sequence_end = on_end
+        self._show_frame(frames[0])
+        self._timer.start(durations[0])
 
     def _advance(self) -> None:
-        self._frame += 1
-        if self._action is AvatarAction.KICK and self._frame >= 10 and not self._impact_sent:
+        # 用户指定的剪辑点：巡航收到停车请求后，必须等到原图第3帧
+        # （零基索引 2）播放结束，再接原图第6帧开始收步。
+        if (
+            self._action is AvatarAction.WALK
+            and self._walk_phase == "cruise"
+            and self._pending_walk_stop
+            and self._sprite_frame == 2
+        ):
+            self._begin_walk_stop()
+            return
+
+        next_pos = self._sequence_pos + 1
+        if next_pos >= len(self._sequence):
+            if self._loop:
+                next_pos = 0
+            else:
+                callback = self._on_sequence_end
+                self._timer.stop()
+                if callback is not None:
+                    callback()
+                return
+
+        self._sequence_pos = next_pos
+        self._show_frame(self._sequence[next_pos])
+        self._timer.start(self._durations[next_pos])
+
+    def _show_frame(self, frame_index: int) -> None:
+        self._sprite_frame = frame_index
+        # 踢击图第5帧是脚完全伸直且带冲击星芒的唯一命中帧。
+        if (
+            self._action is AvatarAction.KICK
+            and frame_index == 4
+            and not self._impact_sent
+        ):
             self._impact_sent = True
             self.impact.emit()
-
-        if self._frame >= self._duration:
-            if self._loop:
-                self._frame = 0
-            else:
-                self._timer.stop()
-                self._frame = self._duration - 1
-                self.update()
-                self.animation_finished.emit()
-                return
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        if self._action is AvatarAction.WALK:
+            frame = self._frames["walk"][self._sprite_frame]
+        elif self._action is AvatarAction.KICK:
+            frame = self._frames["kick"][self._sprite_frame]
+        else:
+            frame = self._frames["victory"][self._sprite_frame]
+
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         if not self._facing_right:
             painter.translate(self.width(), 0)
             painter.scale(-1, 1)
-        self._draw_avatar(painter)
-
-    def _pose(self) -> tuple[float, float, float, float, float, float]:
-        phase = (self._frame / max(1, self._duration)) * math.tau
-        if self._action is AvatarAction.WALK:
-            swing = math.sin(phase) * 20
-            return abs(math.sin(phase * 2)) * 3, -swing, swing, swing, -swing, 0
-        if self._action is AvatarAction.KICK:
-            t = self._frame / max(1, self._duration - 1)
-            if t < 0.35:
-                anticipation = t / 0.35
-                return anticipation * 4, -12, 20, -8, 20, 0
-            if t < 0.65:
-                strike = (t - 0.35) / 0.30
-                return 3 - strike * 2, 15, -20, -15, -70 * strike, 70 * strike
-            recover = (t - 0.65) / 0.35
-            return 1, 5, -5, -5, -70 * (1 - recover), 70 * (1 - recover)
-        if self._action is AvatarAction.VICTORY:
-            bounce = abs(math.sin(phase)) * 5
-            return -bounce, -55, -35, 3, -3, 0
-        return math.sin(phase) * 1.5, -4, 4, 2, -2, 0
-
-    @staticmethod
-    def _rotate(point: QPointF, origin: QPointF, degrees: float) -> QPointF:
-        radians = math.radians(degrees)
-        sin_v, cos_v = math.sin(radians), math.cos(radians)
-        px, py = point.x() - origin.x(), point.y() - origin.y()
-        return QPointF(origin.x() + px * cos_v - py * sin_v, origin.y() + px * sin_v + py * cos_v)
-
-    def _draw_limb(
-        self,
-        painter: QPainter,
-        start: QPointF,
-        length: float,
-        angle: float,
-        color: QColor,
-        width: float,
-    ) -> QPointF:
-        end = self._rotate(QPointF(start.x(), start.y() + length), start, angle)
-        pen = QPen(color, width)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.drawLine(start, end)
-        return end
-
-    def _draw_avatar(self, painter: QPainter) -> None:
-        look = self.config.look
-        skin = QColor(look.skin)
-        hair = QColor(look.hair)
-        shirt = QColor(look.shirt)
-        shirt_dark = QColor(look.shirt_dark)
-        pants = QColor(look.pants)
-        shoes = QColor(look.shoes)
-        glasses = QColor(look.glasses)
-        glasses_accent = QColor(look.glasses_accent)
-
-        bob, arm_l, arm_r, leg_l, leg_r, kick_extension = self._pose()
-        painter.translate(0, bob)
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 42))
-        painter.drawEllipse(QRectF(64, 286, 150 + kick_extension * 0.35, 18))
-
-        hip_left = QPointF(116, 230)
-        hip_right = QPointF(158, 230)
-        left_foot = self._draw_limb(painter, hip_left, 58, leg_l, pants, 18)
-        right_foot = self._draw_limb(painter, hip_right, 58 + kick_extension, leg_r, pants, 18)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(shoes)
-        painter.drawRoundedRect(QRectF(left_foot.x() - 14, left_foot.y() - 5, 31, 16), 8, 8)
-        painter.drawRoundedRect(QRectF(right_foot.x() - 14, right_foot.y() - 5, 34, 16), 8, 8)
-
-        body = QPainterPath()
-        body.moveTo(91, 143)
-        body.quadTo(137, 124, 184, 143)
-        body.lineTo(177, 235)
-        body.quadTo(137, 248, 98, 235)
-        body.closeSubpath()
-        painter.setBrush(shirt)
-        painter.setPen(QPen(shirt_dark, 3))
-        painter.drawPath(body)
-
-        left_hand = self._draw_limb(painter, QPointF(99, 155), 62, arm_l, shirt, 20)
-        right_hand = self._draw_limb(painter, QPointF(176, 155), 62, arm_r, shirt, 20)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(skin)
-        painter.drawEllipse(QRectF(left_hand.x() - 8, left_hand.y() - 7, 16, 16))
-        painter.drawEllipse(QRectF(right_hand.x() - 8, right_hand.y() - 7, 16, 16))
-
-        painter.setBrush(shirt_dark)
-        collar_l = QPainterPath()
-        collar_l.moveTo(118, 137)
-        collar_l.lineTo(136, 157)
-        collar_l.lineTo(119, 166)
-        collar_l.closeSubpath()
-        collar_r = QPainterPath()
-        collar_r.moveTo(156, 137)
-        collar_r.lineTo(137, 157)
-        collar_r.lineTo(155, 166)
-        collar_r.closeSubpath()
-        painter.drawPath(collar_l)
-        painter.drawPath(collar_r)
-        painter.setBrush(QColor("#D7DBDD"))
-        painter.drawEllipse(QRectF(134, 168, 6, 6))
-        painter.drawEllipse(QRectF(134, 181, 6, 6))
-        painter.setPen(QPen(shirt_dark, 2))
-        painter.drawArc(QRectF(110, 190, 18, 10), 0, 180 * 16)
-        painter.drawLine(QPointF(116, 195), QPointF(121, 188))
-
-        painter.setPen(QPen(QColor("#B98167"), 2))
-        painter.setBrush(skin)
-        painter.drawEllipse(QRectF(62, 30, 151, 132))
-        painter.drawEllipse(QRectF(54, 80, 20, 33))
-        painter.drawEllipse(QRectF(202, 80, 20, 33))
-
-        hair_path = QPainterPath()
-        hair_path.moveTo(67, 91)
-        hair_path.cubicTo(63, 47, 91, 19, 132, 18)
-        hair_path.cubicTo(171, 13, 205, 36, 211, 78)
-        hair_path.cubicTo(192, 60, 174, 53, 154, 56)
-        hair_path.cubicTo(130, 58, 117, 47, 92, 66)
-        hair_path.cubicTo(80, 74, 74, 85, 67, 91)
-        hair_path.closeSubpath()
-        painter.setPen(QPen(hair, 2))
-        painter.setBrush(hair)
-        painter.drawPath(hair_path)
-        painter.setPen(QPen(QColor("#454545"), 3))
-        painter.drawArc(QRectF(92, 29, 90, 48), 10 * 16, 135 * 16)
-        painter.drawArc(QRectF(107, 25, 78, 54), 15 * 16, 128 * 16)
-
-        painter.setBrush(QColor(255, 255, 255, 22))
-        painter.setPen(QPen(glasses, 4))
-        painter.drawRoundedRect(QRectF(78, 79, 53, 38), 10, 10)
-        painter.drawRoundedRect(QRectF(145, 79, 53, 38), 10, 10)
-        painter.setPen(QPen(glasses_accent, 3))
-        painter.drawLine(QPointF(131, 92), QPointF(145, 92))
-        painter.drawLine(QPointF(78, 86), QPointF(67, 82))
-        painter.drawLine(QPointF(198, 86), QPointF(210, 82))
-
-        blink = self._action is AvatarAction.VICTORY and self._frame % 8 in (0, 1)
-        painter.setPen(QPen(QColor("#2A211E"), 3))
-        if blink:
-            painter.drawLine(QPointF(95, 97), QPointF(112, 97))
-            painter.drawLine(QPointF(163, 97), QPointF(180, 97))
-        else:
-            painter.setBrush(QColor("#2A211E"))
-            painter.drawEllipse(QRectF(100, 92, 8, 8))
-            painter.drawEllipse(QRectF(168, 92, 8, 8))
-        painter.setPen(QPen(QColor("#9B5E58"), 3))
-        if self._action is AvatarAction.KICK:
-            painter.drawLine(QPointF(125, 128), QPointF(151, 126))
-        else:
-            painter.drawArc(QRectF(119, 112, 38, 24), 200 * 16, 140 * 16)
+        painter.drawPixmap(0, 0, frame)

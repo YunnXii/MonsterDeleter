@@ -21,6 +21,8 @@ from .explosion import ExplosionWidget
 
 
 class DesktopCleanerOverlay(QWidget):
+    WALK_BRAKE_MS = 535
+
     def __init__(self, target: Path | None, config: CharacterConfig, *, demo: bool = False) -> None:
         super().__init__()
         self.target = target
@@ -30,6 +32,7 @@ class DesktopCleanerOverlay(QWidget):
         self._sequence_started = False
         self._deleted = False
         self._delete_result: DeleteResult | None = None
+        self._walk_end: QPoint | None = None
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -44,6 +47,8 @@ class DesktopCleanerOverlay(QWidget):
         self.avatar.hide()
         self.avatar.impact.connect(self._on_impact)
         self.avatar.animation_finished.connect(self._on_avatar_animation_finished)
+        self.avatar.walk_stop_started.connect(self._start_walk_brake)
+        self.avatar.walk_stopped.connect(self._on_walk_stopped)
 
         self.explosion = ExplosionWidget(self)
         self.explosion.hide()
@@ -168,35 +173,60 @@ class DesktopCleanerOverlay(QWidget):
     def _avatar_end_position(self) -> tuple[QPoint, bool]:
         assert self.target_pos is not None
         target_x, target_y = self.target_pos.x(), self.target_pos.y()
-        avatar_w, avatar_h = self.avatar.width(), self.avatar.height()
-        stand_y = max(-20, min(self.height() - avatar_h, target_y - avatar_h + 72))
+        facing_right = target_x >= self.width() // 2
 
-        if target_x >= self.width() // 2:
-            end_x = target_x - avatar_w + 58
-            return QPoint(max(-20, end_x), stand_y), True
-        end_x = target_x - 58
-        return QPoint(min(self.width() - avatar_w + 20, end_x), stand_y), False
+        local_impact_x = (
+            self.config.impact_x
+            if facing_right
+            else self.avatar.width() - self.config.impact_x
+        )
+        end_x = target_x - local_impact_x
+        stand_y = target_y - self.config.impact_y
+
+        end_x = max(-24, min(self.width() - self.avatar.width() + 24, end_x))
+        stand_y = max(-24, min(self.height() - self.avatar.height() + 24, stand_y))
+        return QPoint(end_x, stand_y), facing_right
 
     def _start_walk(self) -> None:
-        assert self.target_pos is not None
         end, facing_right = self._avatar_end_position()
+        self._walk_end = end
+        direction = 1 if facing_right else -1
         start_x = -self.avatar.width() - 30 if facing_right else self.width() + 30
         start = QPoint(start_x, end.y())
+
+        pre_stop_x = end.x() - direction * self.config.stop_distance
+        pre_stop = QPoint(pre_stop_x, end.y())
+
         self.avatar.set_facing_right(facing_right)
         self.avatar.move(start)
         self.avatar.show()
         self.avatar.raise_()
         self.avatar.play_walk()
 
-        distance = abs(end.x() - start.x())
-        duration = max(1100, min(3300, int(distance * 2.15)))
+        distance = abs(pre_stop.x() - start.x())
+        duration = max(700, int(distance * 1000 / max(1, self.config.walk_speed)))
         self.walk_animation = QPropertyAnimation(self.avatar, b"pos", self)
         self.walk_animation.setDuration(duration)
         self.walk_animation.setStartValue(start)
-        self.walk_animation.setEndValue(end)
-        self.walk_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.walk_animation.finished.connect(self._show_confirmation)
+        self.walk_animation.setEndValue(pre_stop)
+        self.walk_animation.setEasingCurve(QEasingCurve.Type.Linear)
+        self.walk_animation.finished.connect(self.avatar.request_walk_stop)
         self.walk_animation.start()
+
+    def _start_walk_brake(self) -> None:
+        if self._walk_end is None:
+            return
+        self.brake_animation = QPropertyAnimation(self.avatar, b"pos", self)
+        self.brake_animation.setDuration(self.WALK_BRAKE_MS)
+        self.brake_animation.setStartValue(self.avatar.pos())
+        self.brake_animation.setEndValue(self._walk_end)
+        self.brake_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.brake_animation.start()
+
+    def _on_walk_stopped(self) -> None:
+        if self._walk_end is not None:
+            self.avatar.move(self._walk_end)
+        self._show_confirmation()
 
     def _show_confirmation(self) -> None:
         self.avatar.play_idle()
@@ -219,11 +249,19 @@ class DesktopCleanerOverlay(QWidget):
         self.dialog.hide()
         self.avatar.play_kick()
 
+    def _stop_motion_animations(self) -> None:
+        for name in ("walk_animation", "brake_animation", "exit_animation"):
+            animation = getattr(self, name, None)
+            if animation is not None:
+                animation.stop()
+
     def _retry(self) -> None:
         self.dialog.hide()
+        self._stop_motion_animations()
         self.avatar.stop()
         self.avatar.hide()
         self.target_pos = None
+        self._walk_end = None
         self._sequence_started = False
         self._deleted = False
         self._delete_result = None
@@ -267,7 +305,7 @@ class DesktopCleanerOverlay(QWidget):
         facing_right = self.avatar.x() < self.width() // 2
         end_x = self.width() + 80 if facing_right else -self.avatar.width() - 80
         self.avatar.set_facing_right(facing_right)
-        self.avatar.play_walk()
+        self.avatar.play_walk_cruise()
         self.exit_animation = QPropertyAnimation(self.avatar, b"pos", self)
         self.exit_animation.setDuration(1150)
         self.exit_animation.setStartValue(self.avatar.pos())
@@ -277,6 +315,7 @@ class DesktopCleanerOverlay(QWidget):
         self.exit_animation.start()
 
     def _exit(self) -> None:
+        self._stop_motion_animations()
         self.avatar.stop()
         self.close()
         QTimer.singleShot(0, QApplication.instance().quit)

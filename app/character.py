@@ -30,6 +30,10 @@ class CharacterConfig:
     width: int
     height: int
     fps: int
+    impact_x: int
+    impact_y: int
+    walk_speed: int
+    stop_distance: int
     look: CharacterLook
 
     @classmethod
@@ -44,8 +48,12 @@ class CharacterConfig:
             retry_text=str(data["retry_text"]),
             success_text=str(data["success_text"]),
             failure_text=str(data["failure_text"]),
-            width=int(data.get("width", 280)),
-            height=int(data.get("height", 320)),
+            width=int(data.get("width", 320)),
+            height=int(data.get("height", 340)),
             fps=int(data.get("fps", 12)),
+            impact_x=int(data.get("impact_x", 257)),
+            impact_y=int(data.get("impact_y", 151)),
+            walk_speed=int(data.get("walk_speed", 430)),
+            stop_distance=int(data.get("stop_distance", 88)),
             look=look,
         )
