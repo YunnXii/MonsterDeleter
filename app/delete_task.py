@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal, pyqtSlot
 
-from .delete_service import DeleteResult, move_to_recycle_bin
+from .delete_service import DeleteFailureKind, DeleteResult, move_to_recycle_bin
 
 
 class DeleteTaskSignals(QObject):
@@ -39,7 +39,18 @@ class DeleteTask(QRunnable):
     def run(self) -> None:
         initialized_com = _initialize_com_sta()
         try:
-            result = move_to_recycle_bin(self.target, demo=self.demo)
+            try:
+                result = move_to_recycle_bin(self.target, demo=self.demo)
+            except Exception as exc:
+                # move_to_recycle_bin already converts normal Shell errors into
+                # DeleteResult. Keep the worker boundary defensive so an
+                # unexpected backend exception can never strand the UI waiting.
+                result = DeleteResult(
+                    False,
+                    "后台删除任务异常结束",
+                    DeleteFailureKind.OTHER,
+                    str(exc),
+                )
         finally:
             if initialized_com:
                 _uninitialize_com()
