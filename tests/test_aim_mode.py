@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QApplication
 
 import app.aim_resolver as aim_resolver
 import app.target_resolver as target_resolver
+from app.aim_input import WM_RBUTTONDOWN, WM_RBUTTONUP, right_cancel_transition
 from app.aim_overlay import AimOverlay
 from app.aim_resolver import (
     AimProbeResult,
@@ -157,6 +158,23 @@ def test_point_target_padding_helper_remains_available_for_hover_hysteresis() ->
     target = _physical("demo.txt", 100, 100, 180, 180)
     assert point_hits_physical_target((190, 180), target, margin_x=12, margin_y=9)
     assert not point_hits_physical_target((193, 180), target, margin_x=12, margin_y=9)
+
+
+def test_aim_right_click_is_swallowed_until_button_up_then_cancels() -> None:
+    consume_down, pending, cancel_down = right_cancel_transition(
+        WM_RBUTTONDOWN,
+        False,
+    )
+    consume_up, pending, cancel_up = right_cancel_transition(
+        WM_RBUTTONUP,
+        pending,
+    )
+
+    assert consume_down is True
+    assert cancel_down is False
+    assert consume_up is True
+    assert cancel_up is True
+    assert pending is False
 
 
 def test_probe_result_reports_real_shell_item() -> None:
