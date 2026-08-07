@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+*.spec
+build/
+dist/
+walk_offsets_debug.png
+kick_impact_debug.png
