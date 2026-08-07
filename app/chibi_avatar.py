@@ -84,6 +84,10 @@ class ChibiAvatar(QWidget):
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
+        # Walk braking is phase-aligned to this timer, so prefer precise timing
+        # over Qt's normal coarse timer tolerance. Late delivery is still safe;
+        # the overlay requests the stop before the legal frame boundary.
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._advance)
 
         self._idle_bob_timer = QTimer(self)
