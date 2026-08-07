@@ -9,10 +9,11 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 from app.character import CharacterConfig
 from app.chibi_avatar import ChibiAvatar
+from app.delete_service import DeleteFailureKind, DeleteResult
 from app.explosion import ExplosionWidget
 from app.flying_icon import FlyingIcon
 from app.kick_calibrator import KickCalibrationOverlay
-from app.overlay import DesktopCleanerOverlay
+from app.overlay import DesktopCleanerOverlay, failure_copy
 
 
 _APP: QApplication | None = None
@@ -48,6 +49,19 @@ def test_overlay_can_construct_in_demo_mode() -> None:
     assert overlay.demo is True
     overlay.close()
     app.processEvents()
+
+
+def test_in_use_failure_copy_matches_product_language() -> None:
+    copy = failure_copy(
+        DeleteResult(
+            False,
+            "文件正在被其他程序占用",
+            DeleteFailureKind.IN_USE,
+        )
+    )
+    assert copy.message == "这玩意正开着呢，踹不动。"
+    assert copy.retry_label == "关了再踹一次"
+    assert copy.cancel_label == "不踹了"
 
 
 def test_kick_calibrator_constructs_and_moves_pose() -> None:
