@@ -11,6 +11,10 @@ SERVER_NAME = "YunnXii-JiaqiCleaner-Resident-v1"
 PROTOCOL_VERSION = 1
 
 
+class ResidentAlreadyRunning(RuntimeError):
+    """Raised when another process wins the resident-server startup race."""
+
+
 def make_command(target: Path | None = None) -> dict[str, object]:
     if target is None:
         return {"version": PROTOCOL_VERSION, "type": "activate"}
@@ -37,6 +41,15 @@ def decode_command(payload: bytes) -> dict[str, object] | None:
     if value.get("type") == "target" and not isinstance(value.get("path"), str):
         return None
     return value
+
+
+def _resident_endpoint_is_live(*, timeout_ms: int = 350) -> bool:
+    probe = QLocalSocket()
+    probe.connectToServer(SERVER_NAME, QIODevice.OpenModeFlag.WriteOnly)
+    if not probe.waitForConnected(timeout_ms):
+        return False
+    probe.disconnectFromServer()
+    return True
 
 
 def send_command(command: dict[str, object], *, timeout_ms: int = 650) -> bool:
@@ -74,12 +87,20 @@ class LocalCommandServer(QObject):
         if self.server.listen(SERVER_NAME):
             return
 
-        # If the previous process crashed, a stale local-server endpoint may
-        # remain. The caller only starts a server after a client connection has
-        # already failed, so removing that stale endpoint is safe here.
+        # listen() can fail for two very different reasons: an actually-running
+        # resident won a near-simultaneous startup race, or a crashed process
+        # left a stale endpoint behind. Probe before removing anything.
+        if _resident_endpoint_is_live():
+            raise ResidentAlreadyRunning("已有家琦常驻实例")
+
         QLocalServer.removeServer(SERVER_NAME)
-        if not self.server.listen(SERVER_NAME):
-            raise RuntimeError(f"无法启动常驻通信：{self.server.errorString()}")
+        if self.server.listen(SERVER_NAME):
+            return
+
+        # Another process may have claimed the name between cleanup and listen.
+        if _resident_endpoint_is_live():
+            raise ResidentAlreadyRunning("已有家琦常驻实例")
+        raise RuntimeError(f"无法启动常驻通信：{self.server.errorString()}")
 
     def close(self) -> None:
         self.server.close()
