@@ -11,6 +11,7 @@ from app.character import CharacterConfig
 from app.chibi_avatar import ChibiAvatar
 from app.explosion import ExplosionWidget
 from app.flying_icon import FlyingIcon
+from app.kick_calibrator import KickCalibrationOverlay
 from app.overlay import DesktopCleanerOverlay
 
 
@@ -46,6 +47,25 @@ def test_overlay_can_construct_in_demo_mode() -> None:
     app.processEvents()
     assert overlay.demo is True
     overlay.close()
+    app.processEvents()
+
+
+def test_kick_calibrator_constructs_and_moves_pose() -> None:
+    app = _app()
+    config = _config()
+    calibrator = KickCalibrationOverlay(config)
+    calibrator.show()
+    app.processEvents()
+
+    assert calibrator.impact_x == config.impact_x
+    assert calibrator.impact_y == config.impact_y
+
+    # Moving the artwork right/down means the local impact anchor gets smaller.
+    calibrator.move_pose(5, 3)
+    assert calibrator.impact_x == config.impact_x - 5
+    assert calibrator.impact_y == config.impact_y - 3
+
+    calibrator.close()
     app.processEvents()
 
 
