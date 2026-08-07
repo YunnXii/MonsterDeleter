@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app.character import CharacterConfig
 from app.context_menu import register_context_menu, unregister_context_menu
+from app.kick_calibrator import KickCalibrationOverlay
 from app.overlay import DesktopCleanerOverlay
 from app.resources import resource_path
 
@@ -17,6 +18,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="叫家琦来收拾桌面文件")
     parser.add_argument("target", nargs="?", help="要移入回收站的文件或文件夹")
     parser.add_argument("--demo", action="store_true", help="只播放动画，不删除任何内容")
+    parser.add_argument("--calibrate-kick", action="store_true", help="可视化校准踢击命中锚点")
     parser.add_argument("--install-menu", action="store_true", help="注册 Windows 右键菜单")
     parser.add_argument("--uninstall-menu", action="store_true", help="移除 Windows 右键菜单")
     return parser.parse_args(argv)
@@ -44,6 +46,13 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("叫家琦来")
     config = load_character()
+
+    if args.calibrate_kick:
+        calibrator = KickCalibrationOverlay(config)
+        calibrator.show()
+        calibrator.activateWindow()
+        calibrator.setFocus()
+        return app.exec()
 
     if args.uninstall_menu:
         result = unregister_context_menu()
