@@ -39,6 +39,8 @@ python main.py
 - 结合前台 Explorer 窗口、桌面 / 普通 Explorer 场景进行评分；
 - 多个同名项仍无法确认时直接拒绝猜测。
 
+Windows 桌面目录通过 `SHGetKnownFolderPath(FOLDERID_Desktop / FOLDERID_PublicDesktop)` 读取，支持把桌面迁移到 D 盘、OneDrive Known Folder Move 和企业文件夹重定向；Known Folder 异常时才回退注册表与传统 `~/Desktop`。
+
 如果文件所在的桌面或 Explorer 窗口没有露出来，会提示：
 
 ```text
@@ -52,18 +54,34 @@ python main.py
 
 1. 右键常驻小人，选择“瞄一个倒霉文件”；
 2. 出现鼠标穿透的真准星；
-3. 准星移动到 Desktop / Explorer 文件项上时，后台 UI Automation 实时命中下面的 `ListItem`，标签显示识别到的名称；
+3. Explorer 继续通过 UI Automation + Shell 解析；Windows 桌面则优先使用原生 `SysListView32 / FolderView` 的 `LVM_HITTEST`，不依赖桌面是否处于 UIA 活跃状态；
 4. 左键点击由临时 Windows 低级鼠标 Hook 截获，不会真的打开文件；
-5. 程序根据命中的桌面 / Explorer 窗口解析真实文件夹，再把 Explorer 的显示名反解成完整 Path；
+5. 桌面通过原生 item index 读取显示名与图标矩形，再结合 Windows Known Folder 解析真实 Path；Explorer 则通过 `Shell.Application` 取得真实目录并处理隐藏扩展名；
 6. 得到 `真实 Path + 真实屏幕矩形` 后关闭准星，直接复用模式一的执行流程；
-7. 右键或 Esc 可取消瞄准。
+7. 右键或 Esc 可取消瞄准；右键按下与抬起会完整吞掉，取消后不会顺手弹出 Desktop / Explorer 右键菜单。
 
-内部链路：
+桌面内部链路：
+
+```text
+屏幕物理坐标
+→ Progman / WorkerW
+→ SHELLDLL_DefView
+→ SysListView32 / FolderView
+→ LVM_HITTEST
+→ item index
+→ LVM_GETITEMTEXTW + LVM_GETITEMRECT
+→ Known Folder Desktop
+→ 真实 Path + 原生图标矩形
+→ Qt 逻辑坐标
+→ 常驻任务执行器
+```
+
+Explorer 内部链路：
 
 ```text
 屏幕物理坐标
 → UI Automation ControlFromPoint
-→ Desktop / Explorer ListItem
+→ Explorer ListItem
 → Shell.Application 取得 Explorer 当前真实目录
 → 处理隐藏扩展名
 → 真实 Path + UIA BoundingRectangle
@@ -75,7 +93,18 @@ python main.py
 
 点击空白处、非文件元素或无法解析成普通文件系统 Path 的虚拟位置时，准星会给出提示并继续留在瞄准状态，不会退出或随便选一个目标。
 
-准星视觉层使用 `WindowTransparentForInput`，输入由瞄准期间临时存在的 `WH_MOUSE_LL / WH_KEYBOARD_LL` Hook 负责，因此透明层不会挡住底下 Explorer 的 UI Automation Hit Test。
+准星视觉层使用 `WindowTransparentForInput`，输入由瞄准期间临时存在的 `WH_MOUSE_LL / WH_KEYBOARD_LL` Hook 负责，因此透明层不会挡住底下 Explorer 或桌面的命中测试。
+
+Hover 保留约 `320ms` 的视觉抗抖，但最终左键选择一定重新执行严格命中；Hover 缓存不会参与删除目标判断。
+
+开发诊断可通过：
+
+```powershell
+$env:JIAQI_AIM_DEBUG="1"
+python main.py
+```
+
+开启，原生桌面命中日志写入 `%LOCALAPPDATA%\JiaqiCleaner\aim-debug.log`。
 
 两种入口现在最终都统一成同一种内部任务：`真实 Path + 真实屏幕位置`。
 
@@ -150,8 +179,7 @@ Pet 出发：145px → 298px，约 210ms，脚底位置不变
 
 关键参数：
 
-- 正常行走速度约 `390 px/s`；
-- 回 Home 速度约 `640 px/s`；
+- 去程与回 Home 统一约 `640 px/s`；
 - 巡航 `105 / 85 / 105 / 85ms`；
 - Kick 锚点 `impact_x=234 / impact_y=136`；
 - 等待位额外外移 `40px`；
@@ -176,7 +204,7 @@ Pet 出发：145px → 298px，约 210ms，脚底位置不变
 
 ## DPI 与多屏
 
-UI Automation 的 `BoundingRectangle` 使用 Windows 物理像素，而 Qt 在高 DPI 下使用逻辑坐标。`target_resolver.py` 会根据目标所在显示器的物理边界和 `QScreen.devicePixelRatio()` 将命中位置转换成 Qt 全局逻辑坐标，再交给动画舞台。
+UI Automation 和原生桌面 ListView 都提供 Windows 物理像素，而 Qt 在高 DPI 下使用逻辑坐标。`target_resolver.py` 会根据目标所在显示器的物理边界和 `QScreen.devicePixelRatio()` 将命中位置转换成 Qt 全局逻辑坐标，再交给动画舞台。
 
 目标继续覆盖：
 
@@ -211,7 +239,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-真实文件定位 / 真准星使用 `uiautomation`；Explorer 真实目录解析使用 `pywin32` 的 `Shell.Application`。构建脚本显式收集 `uiautomation`，并加入 `win32com.client / pythoncom / pywintypes` hidden imports。
+真实文件定位 / Explorer 真准星使用 `uiautomation`；Explorer 真实目录解析使用 `pywin32` 的 `Shell.Application`。桌面真准星优先使用 Win32 原生 `SysListView32` 消息，不新增额外依赖。构建脚本显式收集 `uiautomation`，并加入 `win32com.client / pythoncom / pywintypes` hidden imports。
 
 打包：
 
@@ -234,7 +262,9 @@ CI 在 Windows 上实际执行测试与 onefile 构建，避免只在源码模�
 app/
   aim_input.py           真准星期间的临时鼠标 / Esc 低级 Hook
   aim_overlay.py         鼠标穿透准星与实时识别标签
-  aim_resolver.py        屏幕点 → UIA ListItem → 真实文件 Path
+  aim_resolver.py        屏幕点 → Desktop Native / Explorer UIA → 真实文件 Path
+  native_desktop.py      Win32 Desktop ListView 原生命中与跨进程只读信息获取
+  desktop_paths.py       Windows Known Folder 桌面路径解析
   autostart.py           Windows 开机启动
   character.py           角色参数与锚点配置
   chibi_avatar.py        精灵播放器与动作状态机
@@ -258,4 +288,4 @@ characters/jiaqi/
     victory.png
 ```
 
-当前不计划加入音效。下一阶段以 Windows 实机真准星、多屏 / DPI 和最终交付体验验收为主，再决定是否进入安装包、自动更新或 AI 互动等扩展。
+当前不计划加入音效。下一阶段以 Windows 实机多屏 / DPI 和最终交付体验验收为主，再决定是否进入安装包、自动更新或 AI 互动等扩展。
