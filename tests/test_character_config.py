@@ -15,4 +15,5 @@ def test_character_config_loads() -> None:
     assert config.success_text == "这倒霉文件已经踹飞了。"
     assert config.impact_x == 234
     assert config.impact_y == 136
+    assert config.walk_speed == 640
     assert config.waiting_offset == 40
