@@ -45,11 +45,28 @@ def test_hresult_sharing_violation_is_in_use() -> None:
     assert result is DeleteFailureKind.IN_USE
 
 
+def test_shell_copyengine_sharing_violation_is_in_use() -> None:
+    # send2trash can surface COPYENGINE_E_SHARING_VIOLATION_SRC as a signed
+    # WinError: 0x80270027 == -2144927705.
+    result = _classify_exception(FakeWindowsError(winerror=-2144927705))
+    assert result is DeleteFailureKind.IN_USE
+
+
 def test_windows_access_denied_is_permission() -> None:
     result = _classify_exception(FakeWindowsError(winerror=5))
     assert result is DeleteFailureKind.PERMISSION
 
 
+def test_shell_copyengine_access_denied_is_permission() -> None:
+    result = _classify_exception(FakeWindowsError(hresult=0x80270021))
+    assert result is DeleteFailureKind.PERMISSION
+
+
 def test_windows_file_not_found_is_not_found() -> None:
     result = _classify_exception(FakeWindowsError(winerror=2))
+    assert result is DeleteFailureKind.NOT_FOUND
+
+
+def test_shell_copyengine_path_not_found_is_not_found() -> None:
+    result = _classify_exception(FakeWindowsError(hresult=0x80270023))
     assert result is DeleteFailureKind.NOT_FOUND
