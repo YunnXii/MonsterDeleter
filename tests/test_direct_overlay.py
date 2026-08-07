@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app.character import CharacterConfig
 from app.chibi_avatar import AvatarAction
-from app.direct_overlay import DirectTargetCleanerOverlay
+from app.direct_overlay import DirectTargetCleanerOverlay, projectile_direction
 from app.overlay import DialogMode, TurnPurpose
 
 
@@ -26,6 +26,13 @@ def _app() -> QApplication:
 
 def _config() -> CharacterConfig:
     return CharacterConfig.load(CONFIG_PATH)
+
+
+def test_projectile_direction_follows_avatar_to_target_not_screen_half() -> None:
+    # Reproduces the desktop bug: both avatar and target can live on the left
+    # half of the screen while the actual kick still points to the right.
+    assert projectile_direction(target_x=420, avatar_left=120, avatar_width=280) == 1
+    assert projectile_direction(target_x=120, avatar_left=260, avatar_width=280) == -1
 
 
 def test_direct_overlay_skips_crosshair_and_starts_from_entry() -> None:
@@ -55,6 +62,13 @@ def test_direct_overlay_skips_crosshair_and_starts_from_entry() -> None:
         assert overlay.target_pos is not None
         assert overlay._direct_entry_local is not None
         assert overlay.avatar.current_action is AvatarAction.WALK
+
+        expected_foot = entry_global - geometry.topLeft()
+        actual_foot = QPoint(
+            overlay._direct_entry_local.x() + overlay.avatar.width() // 2,
+            overlay._direct_entry_local.y() + overlay.avatar.height(),
+        )
+        assert actual_foot == expected_foot
     finally:
         overlay._stop_motion_animations()
         overlay.avatar.stop()
