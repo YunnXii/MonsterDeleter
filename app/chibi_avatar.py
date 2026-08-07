@@ -28,12 +28,12 @@ class ChibiAvatar(QWidget):
 
     # Source art is numbered 1..9. Runtime indices are zero-based.
     # Start: 1 -> 2 -> 3
-    # Cruise: 4 <-> 3 (alternate legs)
+    # Cruise experiment: 3 -> 6 -> 4 -> 2, then loop.
     # Stop: after frame 3 finishes, continue 6 -> 7 -> 8 -> 9.
     WALK_START = (0, 1, 2)
     WALK_START_DURATIONS = (140, 120, 110)
-    WALK_CRUISE = (3, 2)
-    WALK_CRUISE_DURATIONS = (120, 120)
+    WALK_CRUISE = (2, 5, 3, 1)
+    WALK_CRUISE_DURATIONS = (120, 120, 120, 120)
     WALK_STOP = (5, 6, 7, 8)
     WALK_STOP_DURATIONS = (120, 140, 160, 220)
 
@@ -178,7 +178,7 @@ class ChibiAvatar(QWidget):
             self._pending_walk_stop = True
 
     def play_walk_cruise(self) -> None:
-        """Use the two alternating-leg frames when leaving the screen."""
+        """Loop the experimental four-pose walk cycle when leaving the screen."""
         self._stop_idle_bob()
         self._action = AvatarAction.WALK
         self._walk_phase = "cruise"
@@ -277,8 +277,9 @@ class ChibiAvatar(QWidget):
         self._timer.start(durations[0])
 
     def _advance(self) -> None:
-        # Stop requests are phase-locked: source frame 4 can never jump directly
-        # into braking. Source frame 3 (zero-based index 2) must finish first.
+        # Stop requests are phase-locked: regardless of which experimental
+        # cruise pose is showing, source frame 3 (zero-based index 2) must
+        # finish before the braking artwork begins.
         if (
             self._action is AvatarAction.WALK
             and self._walk_phase == "cruise"
