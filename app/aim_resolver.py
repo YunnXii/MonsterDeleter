@@ -12,12 +12,16 @@ from .target_resolver import (
     PhysicalTarget,
     _known_desktop_roots,
     _physical_target,
+    _safe_children,
     _safe_int,
     _safe_text,
 )
 
 
 MAX_PARENT_HOPS = 14
+MAX_DESKTOP_HIT_CONTROLS = 3000
+DESKTOP_HIT_MARGIN_X = 7
+DESKTOP_HIT_MARGIN_Y = 5
 
 
 class AimStatus(Enum):
@@ -114,6 +118,21 @@ def physical_cursor_position() -> tuple[int, int]:
     return (0, 0)
 
 
+def point_hits_physical_target(
+    point: tuple[int, int],
+    target: PhysicalTarget,
+    *,
+    margin_x: int = 0,
+    margin_y: int = 0,
+) -> bool:
+    """Return whether a physical cursor point lies in an optionally padded UIA rect."""
+    x, y = int(point[0]), int(point[1])
+    return (
+        target.left - max(0, margin_x) <= x <= target.right + max(0, margin_x)
+        and target.top - max(0, margin_y) <= y <= target.bottom + max(0, margin_y)
+    )
+
+
 def _load_auto():
     try:
         import uiautomation as auto
@@ -127,6 +146,114 @@ def _parent(control):
         return control.GetParentControl()
     except Exception:
         return None
+
+
+def _root_is_desktop(root) -> bool:
+    class_name = _safe_text(root, "ClassName")
+    name = _safe_text(root, "Name").casefold()
+    return class_name in {"Progman", "WorkerW"} or name in {
+        "program manager",
+        "desktop",
+        "桌面",
+    }
+
+
+def _choose_geometric_hit(
+    items: list[_HitItem],
+    point: tuple[int, int],
+) -> _HitItem | None:
+    """Choose the closest desktop item whose padded UIA rect covers the point."""
+    hits = [
+        item
+        for item in items
+        if point_hits_physical_target(
+            point,
+            item.target,
+            margin_x=DESKTOP_HIT_MARGIN_X,
+            margin_y=DESKTOP_HIT_MARGIN_Y,
+        )
+    ]
+    if not hits:
+        return None
+
+    x, y = int(point[0]), int(point[1])
+
+    def score(item: _HitItem) -> tuple[float, int]:
+        center_x, center_y = item.target.center
+        distance_sq = float((center_x - x) ** 2 + (center_y - y) ** 2)
+        area = max(1, item.target.right - item.target.left) * max(
+            1, item.target.bottom - item.target.top
+        )
+        return distance_sq, area
+
+    return min(hits, key=score)
+
+
+def _desktop_geometric_hit(
+    auto,
+    root,
+    point: tuple[int, int],
+    *,
+    root_class: str,
+    root_handle: int,
+) -> _HitItem | None:
+    """Fallback for flaky Desktop ControlFromPoint providers.
+
+    Windows' desktop sometimes returns FolderView / SysListView32 rather than the
+    ListItem under the cursor after focus changes. The shell itself still knows
+    the item geometry, so enumerate visible desktop ListItems and perform the
+    final hit-test locally instead of declaring the point empty.
+    """
+    items: list[_HitItem] = []
+    visited = 0
+    try:
+        iterator = auto.WalkTree(
+            root,
+            getChildren=_safe_children,
+            includeTop=True,
+            maxDepth=MAX_PARENT_HOPS,
+        )
+        for entry in iterator:
+            control = entry[0]
+            visited += 1
+            if visited > MAX_DESKTOP_HIT_CONTROLS:
+                break
+
+            try:
+                if int(control.ControlType) != int(auto.ControlType.ListItemControl):
+                    continue
+            except Exception:
+                continue
+
+            name = _safe_text(control, "Name").strip()
+            if not name:
+                continue
+            physical = _physical_target(control, root_class=root_class, selected=False)
+            if physical is None:
+                continue
+
+            if not point_hits_physical_target(
+                point,
+                physical,
+                margin_x=DESKTOP_HIT_MARGIN_X,
+                margin_y=DESKTOP_HIT_MARGIN_Y,
+            ):
+                continue
+
+            items.append(
+                _HitItem(
+                    control=control,
+                    target=physical,
+                    name=name,
+                    root_class=root_class,
+                    root_handle=root_handle,
+                    desktop_root=True,
+                )
+            )
+    except Exception:
+        return None
+
+    return _choose_geometric_hit(items, point)
 
 
 def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
@@ -144,7 +271,7 @@ def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
         if current is None:
             break
         try:
-            if int(current.ControlType) == int(auto.ControlType.ListItemControl):
+            if list_item is None and int(current.ControlType) == int(auto.ControlType.ListItemControl):
                 list_item = current
         except Exception:
             pass
@@ -154,29 +281,24 @@ def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
             root = current
         current = _parent(current)
 
-    if list_item is None:
-        return None
-
-    if root is None:
-        current = list_item
-        for _ in range(MAX_PARENT_HOPS):
-            if current is None:
-                break
-            class_name = _safe_text(current, "ClassName")
-            if class_name in {"CabinetWClass", "ExploreWClass", "Progman", "WorkerW"}:
-                root = current
-                break
-            current = _parent(current)
-
     if root is None:
         return None
 
     root_class = _safe_text(root, "ClassName")
-    desktop_root = root_class in {"Progman", "WorkerW"} or _safe_text(root, "Name").casefold() in {
-        "program manager",
-        "desktop",
-        "桌面",
-    }
+    root_handle = _safe_int(root, "NativeWindowHandle")
+    desktop_root = _root_is_desktop(root)
+
+    if list_item is None:
+        if desktop_root:
+            return _desktop_geometric_hit(
+                auto,
+                root,
+                point,
+                root_class=root_class,
+                root_handle=root_handle,
+            )
+        return None
+
     physical = _physical_target(list_item, root_class=root_class, selected=False)
     if physical is None:
         return None
@@ -190,7 +312,7 @@ def _find_hit_item(auto, point: tuple[int, int]) -> _HitItem | None:
         target=physical,
         name=name,
         root_class=root_class,
-        root_handle=_safe_int(root, "NativeWindowHandle"),
+        root_handle=root_handle,
         desktop_root=desktop_root,
     )
 
