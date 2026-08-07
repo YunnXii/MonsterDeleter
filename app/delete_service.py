@@ -40,19 +40,33 @@ def _exception_chain(exc: BaseException):
         current = current.__cause__ or current.__context__
 
 
+def _winerror_from_hresult(value: object) -> int | None:
+    if not isinstance(value, int):
+        return None
+    unsigned = value & 0xFFFFFFFF
+    # HRESULT_FROM_WIN32(x) has the form 0x8007xxxx.
+    if unsigned & 0xFFFF0000 == 0x80070000:
+        return unsigned & 0xFFFF
+    return None
+
+
 def _classify_exception(exc: BaseException) -> DeleteFailureKind:
     """Map low-level Windows/Python errors to a stable product-facing category."""
     for item in _exception_chain(exc):
-        winerror = getattr(item, "winerror", None)
-        error_no = getattr(item, "errno", None)
+        candidates = {
+            getattr(item, "winerror", None),
+            _winerror_from_hresult(getattr(item, "hresult", None)),
+            _winerror_from_hresult(getattr(item, "errno", None)),
+        }
 
-        if winerror in {32, 33}:  # sharing / lock violation
+        if candidates & {32, 33}:  # sharing / lock violation
             return DeleteFailureKind.IN_USE
-        if winerror in {5, 65}:  # access denied / network access denied
+        if candidates & {5, 65}:  # access denied / network access denied
             return DeleteFailureKind.PERMISSION
-        if winerror in {2, 3}:  # file/path not found
+        if candidates & {2, 3}:  # file/path not found
             return DeleteFailureKind.NOT_FOUND
 
+        error_no = getattr(item, "errno", None)
         if error_no in {errno.EBUSY, getattr(errno, "ETXTBSY", -1)}:
             return DeleteFailureKind.IN_USE
         if error_no in {errno.EACCES, errno.EPERM}:
@@ -98,10 +112,19 @@ def _notify_shell_deleted(target: Path, *, was_directory: bool) -> None:
         SHCNF_FLUSH = 0x1000
 
         event = SHCNE_RMDIR if was_directory else SHCNE_DELETE
-        ctypes.windll.shell32.SHChangeNotify(
+        notify = ctypes.windll.shell32.SHChangeNotify
+        notify.argtypes = [
+            ctypes.c_long,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        notify.restype = None
+        path_ptr = ctypes.c_wchar_p(str(target))
+        notify(
             event,
             SHCNF_PATHW | SHCNF_FLUSH,
-            str(target),
+            ctypes.cast(path_ptr, ctypes.c_void_p),
             None,
         )
     except Exception:
