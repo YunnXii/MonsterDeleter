@@ -21,7 +21,7 @@ from .explosion import ExplosionWidget
 
 
 class DesktopCleanerOverlay(QWidget):
-    WALK_BRAKE_MS = 535
+    WALK_BRAKE_MS = sum(ChibiAvatar.WALK_STOP_DURATIONS)
 
     def __init__(self, target: Path | None, config: CharacterConfig, *, demo: bool = False) -> None:
         super().__init__()
@@ -204,7 +204,7 @@ class DesktopCleanerOverlay(QWidget):
         self.avatar.play_walk()
 
         distance = abs(pre_stop.x() - start.x())
-        duration = max(700, int(distance * 1000 / max(1, self.config.walk_speed)))
+        duration = max(900, int(distance * 1000 / max(1, self.config.walk_speed)))
         self.walk_animation = QPropertyAnimation(self.avatar, b"pos", self)
         self.walk_animation.setDuration(duration)
         self.walk_animation.setStartValue(start)
@@ -229,7 +229,9 @@ class DesktopCleanerOverlay(QWidget):
         self._show_confirmation()
 
     def _show_confirmation(self) -> None:
-        self.avatar.play_idle()
+        # Walk frame 9 is front-facing: the interaction target is now the user,
+        # not the file, so hold eye contact while waiting for a decision.
+        self.avatar.play_waiting_front()
         name = "这个倒霉文件" if self.demo else (self.target.name if self.target else "这个文件")
         self.dialog_text.setText(f"就是「{name}」？")
         self.confirm_button.show()
@@ -247,7 +249,9 @@ class DesktopCleanerOverlay(QWidget):
 
     def _confirm(self) -> None:
         self.dialog.hide()
-        self.avatar.play_kick()
+        # Reverse the final walk turn (9 -> 8 -> 7) before entering the side-
+        # facing kick sheet. This avoids a one-frame snap from front to side.
+        self.avatar.play_turn_to_target()
 
     def _stop_motion_animations(self) -> None:
         for name in ("walk_animation", "brake_animation", "exit_animation"):
@@ -286,7 +290,9 @@ class DesktopCleanerOverlay(QWidget):
         self.explosion.play()
 
     def _on_avatar_animation_finished(self) -> None:
-        if self.avatar.current_action is AvatarAction.KICK:
+        if self.avatar.current_action is AvatarAction.TURN:
+            self.avatar.play_kick()
+        elif self.avatar.current_action is AvatarAction.KICK:
             self._show_result()
         elif self.avatar.current_action is AvatarAction.VICTORY:
             self._slide_out()
