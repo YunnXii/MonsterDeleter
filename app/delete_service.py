@@ -40,10 +40,16 @@ def _exception_chain(exc: BaseException):
         current = current.__cause__ or current.__context__
 
 
-def _winerror_from_hresult(value: object) -> int | None:
+def _unsigned_hresult(value: object) -> int | None:
     if not isinstance(value, int):
         return None
-    unsigned = value & 0xFFFFFFFF
+    return value & 0xFFFFFFFF
+
+
+def _winerror_from_hresult(value: object) -> int | None:
+    unsigned = _unsigned_hresult(value)
+    if unsigned is None:
+        return None
     # HRESULT_FROM_WIN32(x) has the form 0x8007xxxx.
     if unsigned & 0xFFFF0000 == 0x80070000:
         return unsigned & 0xFFFF
@@ -53,17 +59,39 @@ def _winerror_from_hresult(value: object) -> int | None:
 def _classify_exception(exc: BaseException) -> DeleteFailureKind:
     """Map low-level Windows/Python errors to a stable product-facing category."""
     for item in _exception_chain(exc):
-        candidates = {
+        values = (
             getattr(item, "winerror", None),
-            _winerror_from_hresult(getattr(item, "hresult", None)),
-            _winerror_from_hresult(getattr(item, "errno", None)),
+            getattr(item, "hresult", None),
+            getattr(item, "errno", None),
+        )
+        raw_codes = {
+            code
+            for value in values
+            if (code := _unsigned_hresult(value)) is not None
         }
+        win32_codes = {
+            code
+            for value in values
+            if (code := _winerror_from_hresult(value)) is not None
+        }
+        winerror = getattr(item, "winerror", None)
+        if isinstance(winerror, int) and winerror >= 0:
+            win32_codes.add(winerror)
 
-        if candidates & {32, 33}:  # sharing / lock violation
+        # Windows Shell CopyEngine HRESULTs. send2trash's modern Windows backend
+        # can surface these directly as a signed WinError/OSError value.
+        if raw_codes & {0x80270027, 0x80270028}:  # sharing violation src/dest
             return DeleteFailureKind.IN_USE
-        if candidates & {5, 65}:  # access denied / network access denied
+        if raw_codes & {0x80270021, 0x80270022}:  # access denied src/dest
             return DeleteFailureKind.PERMISSION
-        if candidates & {2, 3}:  # file/path not found
+        if raw_codes & {0x80270023, 0x80270024}:  # path not found src/dest
+            return DeleteFailureKind.NOT_FOUND
+
+        if win32_codes & {32, 33}:  # sharing / lock violation
+            return DeleteFailureKind.IN_USE
+        if win32_codes & {5, 65}:  # access denied / network access denied
+            return DeleteFailureKind.PERMISSION
+        if win32_codes & {2, 3}:  # file/path not found
             return DeleteFailureKind.NOT_FOUND
 
         error_no = getattr(item, "errno", None)
