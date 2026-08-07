@@ -10,14 +10,15 @@ from app.aim_overlay import AimOverlay
 from app.aim_resolver import (
     AimProbeResult,
     AimStatus,
-    _HitItem,
-    _choose_geometric_hit,
+    _hit_item_from_native,
     _matching_entries,
+    _native_desktop_is_definitive_empty,
     _reset_probe_cache_for_tests,
     _resolve_desktop_name,
     point_hits_physical_target,
     probe_shell_item_at,
 )
+from app.native_desktop import NativeDesktopHit, NativeDesktopProbe
 from app.target_resolver import PhysicalTarget
 
 
@@ -33,17 +34,6 @@ def _physical(name: str, left: int, top: int, right: int, bottom: int) -> Physic
         accessible_name=name,
         selected=False,
         root_class="WorkerW",
-    )
-
-
-def _hit(name: str, left: int, top: int, right: int, bottom: int) -> _HitItem:
-    return _HitItem(
-        control=object(),
-        target=_physical(name, left, top, right, bottom),
-        name=name,
-        root_class="WorkerW",
-        root_handle=1,
-        desktop_root=True,
     )
 
 
@@ -78,21 +68,53 @@ def test_aimed_desktop_name_uses_redirected_windows_desktop(monkeypatch, tmp_pat
     assert resolved == target
 
 
-def test_geometric_desktop_hit_recovers_when_direct_uia_hit_is_only_container() -> None:
-    wanted = _hit("年度总结.docx", 100, 100, 180, 180)
-    other = _hit("别的文件.txt", 240, 100, 320, 180)
+def test_native_desktop_hit_converts_to_shared_physical_target() -> None:
+    native = NativeDesktopHit(
+        listview_hwnd=0x1234,
+        item_index=17,
+        name="年度总结.docx",
+        left=100,
+        top=120,
+        right=188,
+        bottom=204,
+    )
 
-    # A few pixels outside the raw rectangle are deliberately tolerated because
-    # desktop UIA bounds can exclude tiny hover edges that Explorer itself treats
-    # as belonging to the icon.
-    point = (184, 140)
-    assert point_hits_physical_target(point, wanted.target, margin_x=7, margin_y=5)
+    hit = _hit_item_from_native(native)
 
-    chosen = _choose_geometric_hit([other, wanted], point)
-    assert chosen is wanted
+    assert hit.desktop_root is True
+    assert hit.control is None
+    assert hit.root_handle == 0x1234
+    assert hit.name == "年度总结.docx"
+    assert hit.target.center == (144, 162)
+    assert hit.target.root_class == "SysListView32"
 
 
-def test_hover_hysteresis_keeps_one_flaky_desktop_probe_then_expires(monkeypatch) -> None:
+def test_native_desktop_empty_is_definitive_only_for_clean_empty_hit() -> None:
+    clean_empty = NativeDesktopProbe(
+        available=True,
+        visible=True,
+        hit=None,
+        diagnostic="desktop-empty",
+    )
+    native_error = NativeDesktopProbe(
+        available=True,
+        visible=True,
+        hit=None,
+        diagnostic="native-desktop-error: boom",
+    )
+    covered = NativeDesktopProbe(
+        available=True,
+        visible=False,
+        hit=None,
+        diagnostic="desktop-covered",
+    )
+
+    assert _native_desktop_is_definitive_empty(clean_empty) is True
+    assert _native_desktop_is_definitive_empty(native_error) is False
+    assert _native_desktop_is_definitive_empty(covered) is False
+
+
+def test_hover_hysteresis_keeps_one_flaky_probe_then_expires(monkeypatch) -> None:
     _reset_probe_cache_for_tests()
     target = _physical("年度总结.docx", 100, 100, 180, 180)
     good = AimProbeResult(AimStatus.FOUND, name="年度总结.docx", target=target)
@@ -112,6 +134,29 @@ def test_hover_hysteresis_keeps_one_flaky_desktop_probe_then_expires(monkeypatch
     assert second.name == "年度总结.docx"
     assert third.status is AimStatus.EMPTY
     _reset_probe_cache_for_tests()
+
+
+def test_hover_cache_requires_cursor_to_stay_near_same_target(monkeypatch) -> None:
+    _reset_probe_cache_for_tests()
+    target = _physical("年度总结.docx", 100, 100, 180, 180)
+    good = AimProbeResult(AimStatus.FOUND, name="年度总结.docx", target=target)
+    miss = AimProbeResult(AimStatus.EMPTY, message="这儿没东西，瞄准点。")
+    responses = iter((good, miss))
+    moments = iter((20.00, 20.12))
+
+    monkeypatch.setattr(aim_resolver, "_probe_shell_item_once", lambda _point: next(responses))
+    monkeypatch.setattr(aim_resolver.time, "monotonic", lambda: next(moments))
+
+    assert probe_shell_item_at((140, 140)).status is AimStatus.FOUND
+    result = probe_shell_item_at((400, 400))
+    assert result.status is AimStatus.EMPTY
+    _reset_probe_cache_for_tests()
+
+
+def test_point_target_padding_helper_remains_available_for_hover_hysteresis() -> None:
+    target = _physical("demo.txt", 100, 100, 180, 180)
+    assert point_hits_physical_target((190, 180), target, margin_x=12, margin_y=9)
+    assert not point_hits_physical_target((193, 180), target, margin_x=12, margin_y=9)
 
 
 def test_probe_result_reports_real_shell_item() -> None:
